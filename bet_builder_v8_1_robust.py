@@ -1851,6 +1851,15 @@ def extraer_future_event(ev, comp_key):
 
     hodd, dodd, aodd = parse_inline_odds(c)
 
+    # ESPN cambia los nombres/campos de ronda entre competiciones. La capa
+    # V9.3 consolida lo disponible sin asumir que "torneo grande" equivale
+    # a once titular. Si no hay fase, queda explicitamente NO identificada.
+    try:
+        from bet_builder_v9_3_context import extract_stage_text
+        stage_text = extract_stage_text(ev, c)
+    except Exception:
+        stage_text = ""
+
     return {
         "Date": pd.Timestamp(
             dt.tz_convert(TZ_PERU).date()
@@ -1861,6 +1870,7 @@ def extraer_future_event(ev, comp_key):
         "Grupo": info["grupo"],
         "Competicion": info["nombre"],
         "TipoCompeticion": info["tipo"],
+        "StageText": stage_text,
         "HomeOriginal": home,
         "AwayOriginal": away,
         "HomeTeam": home,

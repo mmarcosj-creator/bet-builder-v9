@@ -1,6 +1,6 @@
 
 # ============================================================
-# BET BUILDER V9 PRO - STREAMLIT MOBILE
+# BET BUILDER V9.3 CONTEXT PRO - STREAMLIT MOBILE
 # ============================================================
 
 from io import BytesIO
@@ -13,21 +13,22 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-import bet_builder_v9_market_optimizer as v9
+import bet_builder_v9_3_context_optimizer as v9
 import bet_builder_v8_1_robust as base
 
 
-APP_VERSION = "V9 PRO FINAL + BACKTEST"
-DATA_DIR = Path("app_data_v9")
+APP_VERSION = "V9.3 CONTEXT ROTATION GUARD"
+DATA_DIR = Path("app_data_v9_3")
 DATA_DIR.mkdir(exist_ok=True)
 
-DATA_FILE = DATA_DIR / "latest_v9.csv"
-META_FILE = DATA_DIR / "meta_v9.json"
+DATA_FILE = DATA_DIR / "latest_v9_3.csv"
+META_FILE = DATA_DIR / "meta_v9_3.json"
+QUOTE_FILE = DATA_DIR / "cotizaciones_reales.csv"
 
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Bet Builder V9 PRO",
+    page_title="Bet Builder V9.3 CONTEXT PRO",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -164,6 +165,36 @@ def num(v, d=2):
     return "—" if pd.isna(x) else f"{x:.{d}f}"
 
 
+def save_real_quote(row, bookmaker, actual_quote, validation):
+    record = {
+        "RegistradoEn": datetime.now(base.TZ_PERU).isoformat(),
+        "Casa": bookmaker,
+        "FechaPartido": str(pd.Timestamp(row["Fecha"]).date()),
+        "Competicion": row["Competicion"],
+        "Local": row["Local"],
+        "Visitante": row["Visitante"],
+        "Variante": row["Variante"],
+        "Patas": row["Patas"],
+        "CodigosPatas": row.get("CodigosPatas", ""),
+        "FirmaCombinacion": row.get("FirmaCombinacion", ""),
+        "P_Modelo": safe_float(row["P_Conjunta"]),
+        "P_LCB": safe_float(row["P_LCB"]),
+        "CuotaRequerida": safe_float(row["CuotaRequerida"]),
+        "CuotaReal": float(actual_quote),
+        "EV_Modelo": safe_float(validation.get("ev")),
+        "EV_LCB": safe_float(validation.get("ev_lcb")),
+        "Estado": validation.get("status", ""),
+        "Version": APP_VERSION,
+    }
+
+    new = pd.DataFrame([record])
+    if QUOTE_FILE.exists():
+        old = pd.read_csv(QUOTE_FILE)
+        new = pd.concat([old, new], ignore_index=True)
+
+    new.to_csv(QUOTE_FILE, index=False, encoding="utf-8-sig")
+
+
 def load_meta():
     if not META_FILE.exists():
         return {}
@@ -236,6 +267,8 @@ def excel_bytes(df):
         "VarianteRank",
         "Variante",
         "Patas",
+        "CodigosPatas",
+        "FirmaCombinacion",
         "P_Conjunta",
         "P_LCB",
         "CuotaJustaModelo",
@@ -247,6 +280,25 @@ def excel_bytes(df):
         "Fiabilidad",
         "Soporte",
         "SoporteEfectivo",
+        "Dependencia",
+        "PhiMaxAbs",
+        "LiftConjunto",
+        "TasaReciente",
+        "TasaAnterior",
+        "BrechaRegimen",
+        "RegimenEstable",
+        "FaseCompetitiva",
+        "ImportanciaPartido",
+        "RiesgoRotacion",
+        "EstadoAlineacion",
+        "EstadoOnceLocal",
+        "EstadoOnceVisitante",
+        "BaselineOnceLocal",
+        "BaselineOnceVisitante",
+        "ContinuidadOnceLocal",
+        "ContinuidadOnceVisitante",
+        "FactorContexto",
+        "CupoCartera",
         "EstadoPreCuota",
     ]
 
@@ -267,7 +319,7 @@ def excel_bytes(df):
 
         df.to_excel(
             writer,
-            sheet_name="TECNICO_V9",
+            sheet_name="TECNICO_V9_3",
             index=False,
         )
 
@@ -285,7 +337,7 @@ def excel_bytes(df):
             end_row=1,
             end_column=max_col,
         )
-        ws["A1"] = "BET BUILDER V9 PRO — COTIZAR Y VALIDAR CUOTA REAL"
+        ws["A1"] = "BET BUILDER V9.3 CONTEXT PRO — COTIZAR Y VALIDAR CUOTA REAL"
         ws["A1"].font = Font(bold=True, color="FFFFFF", size=17)
         ws["A1"].fill = PatternFill("solid", fgColor="102A43")
         ws["A1"].alignment = Alignment(horizontal="center")
@@ -348,21 +400,53 @@ def excel_bytes(df):
                     ws.cell(rr, headers["P_LCB"]).number_format = "0.0%"
                 if "Fiabilidad" in headers:
                     ws.cell(rr, headers["Fiabilidad"]).number_format = "0.0%"
+                for pct_col in ("TasaReciente", "TasaAnterior", "BrechaRegimen"):
+                    if pct_col in headers:
+                        ws.cell(rr, headers[pct_col]).number_format = "0.0%"
+                for dec_col in ("PhiMaxAbs", "LiftConjunto"):
+                    if dec_col in headers:
+                        ws.cell(rr, headers[dec_col]).number_format = "0.00"
 
                 ws.row_dimensions[rr].height = 44
 
-        widths = {
-            "A": 8, "B": 12, "C": 8, "D": 22, "E": 22, "F": 22,
-            "G": 9, "H": 24, "I": 80, "J": 13, "K": 13,
-            "L": 14, "M": 14, "N": 14, "O": 13, "P": 14, "Q": 14,
-            "R": 13, "S": 11, "T": 14, "U": 16, "V": 16, "W": 14,
+        width_by_header = {
+            "RankingPartido": 9,
+            "Fecha": 12,
+            "HoraPeru": 9,
+            "Competicion": 22,
+            "Local": 22,
+            "Visitante": 22,
+            "VarianteRank": 9,
+            "Variante": 25,
+            "Patas": 80,
+            "P_Conjunta": 13,
+            "P_LCB": 13,
+            "CuotaJustaModelo": 14,
+            "CuotaMinROI29": 14,
+            "CuotaRequerida": 14,
+            "CuotaReal": 13,
+            "ZonaPrecio": 14,
+            "RiesgoCombinado": 16,
+            "Fiabilidad": 12,
+            "Soporte": 11,
+            "SoporteEfectivo": 14,
+            "Dependencia": 13,
+            "PhiMaxAbs": 12,
+            "LiftConjunto": 12,
+            "TasaReciente": 13,
+            "TasaAnterior": 13,
+            "BrechaRegimen": 13,
+            "RegimenEstable": 14,
+            "EstadoPreCuota": 15,
+            "ESTADO_REAL": 18,
+            "EV_REAL": 12,
         }
 
-        for col, width in widths.items():
-            ws.column_dimensions[col].width = width
+        for name, idx in headers.items():
+            ws.column_dimensions[get_column_letter(idx)].width = width_by_header.get(name, 14)
 
         # Técnico
-        tech = wb["TECNICO_V9"]
+        tech = wb["TECNICO_V9_3"]
         tech.freeze_panes = "A2"
         tech.auto_filter.ref = tech.dimensions
 
@@ -381,8 +465,8 @@ def excel_bytes(df):
 st.markdown(
     """
     <div class="hero">
-      <h1>⚽ Bet Builder V9 PRO</h1>
-      <p><b>Primero optimiza el builder. Después la casa debe cotizarlo.</b></p>
+      <h1>⚽ Bet Builder V9.3 CONTEXT PRO</h1>
+      <p><b>Rotación, fase competitiva, calendario y once confirmado.</b></p>
       <span class="pill blue">CUOTA REAL ≥ 4.20</span>
       <span class="pill amber">COTIZAR</span>
       <span class="pill green">VALIDAR EV</span>
@@ -394,10 +478,10 @@ st.markdown(
 st.markdown(
     """
     <div class="info-box">
-      <b>Cambio clave:</b> V9 ya no dice que una apuesta "vale 4.20".
-      Genera builders estadísticamente razonables y tú ingresas la cuota
-      que realmente muestra Betsafe, Betano u otra casa. Solo se valida
-      si la cuota real supera 4.20 y el mínimo exigido por el modelo.
+      <b>Cambio clave:</b> V9.3 no supone que Champions, Libertadores u otro
+      torneo garantice el once principal. Evalúa fase, descanso, carga y el
+      siguiente compromiso; exige alineación confirmada antes de habilitar
+      una apuesta y bloquea builders distintos del generado por el modelo.
     </div>
     """,
     unsafe_allow_html=True,
@@ -415,19 +499,19 @@ try:
         data = load_data()
     else:
         with st.status(
-            "Construyendo V9 para los próximos 7 días…",
+            "Construyendo V9.3 para los próximos 7 días…",
             expanded=True,
         ) as status:
             st.write("Descargando histórico y calendario…")
             data, meta = run_and_save()
             status.update(
-                label="V9 actualizado",
+                label="V9.3 actualizado",
                 state="complete",
                 expanded=False,
             )
 
 except Exception as e:
-    st.error("No fue posible ejecutar V9.")
+    st.error("No fue posible ejecutar V9.3.")
     st.code(str(e))
 
     with st.expander("Detalle técnico"):
@@ -447,7 +531,7 @@ c1, c2 = st.columns(2)
 
 with c1:
     if st.button(
-        "🔄 Actualizar V9",
+        "🔄 Actualizar V9.3",
         use_container_width=True,
         type="primary",
     ):
@@ -469,9 +553,9 @@ with c1:
 with c2:
     if not data.empty:
         st.download_button(
-            "📊 Excel V9 para cotizar",
+            "📊 Excel V9.3 para cotizar",
             data=excel_bytes(data),
-            file_name="BET_BUILDER_V9_COTIZAR_4_20.xlsx",
+            file_name="BET_BUILDER_V9_3_COTIZAR_4_20.xlsx",
             mime=(
                 "application/vnd.openxmlformats-officedocument."
                 "spreadsheetml.sheet"
@@ -492,7 +576,7 @@ if meta:
 # ============================================================
 
 if data.empty:
-    st.warning("No hay candidatos V9 modelables en esta ventana.")
+    st.warning("No hay candidatos V9.3 modelables en esta ventana.")
 else:
     # Resumen
     matches = data["RankingPartido"].nunique()
@@ -509,10 +593,23 @@ else:
     zones = ["TODAS"] + sorted(data["ZonaPrecio"].dropna().unique().tolist())
     risk = ["TODOS"] + sorted(data["RiesgoCombinado"].dropna().unique().tolist())
 
-    f1, f2 = st.columns(2)
+    f1, f2, f3 = st.columns(3)
 
     zone_sel = f1.selectbox("Zona de precio", zones)
     risk_sel = f2.selectbox("Riesgo combinado", risk)
+    bookmaker = f3.selectbox(
+        "Casa para registrar cuota",
+        ["Betsafe", "Betano", "Betsson", "Apuesta Total", "Otra"],
+    )
+
+    if QUOTE_FILE.exists():
+        st.download_button(
+            "Descargar historial de cuotas reales",
+            data=QUOTE_FILE.read_bytes(),
+            file_name="COTIZACIONES_REALES_V9_3.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     view = data.copy()
 
@@ -597,7 +694,31 @@ else:
                 key=key,
             )
 
-            validation = v9.validate_real_quote(row, actual)
+            st.code(
+                f"FIRMA {row.get('FirmaCombinacion', '—')} · "
+                f"{row.get('CodigosPatas', '')}",
+                language=None,
+            )
+            exact_confirmed = st.checkbox(
+                "Confirmo que la casa muestra exactamente estas selecciones y líneas",
+                value=False,
+                key=f"exact_{key}",
+            )
+
+            validation = v9.validate_real_quote(
+                row,
+                actual,
+                exact_confirmed=exact_confirmed,
+                quoted_signature=row.get("FirmaCombinacion", ""),
+            )
+
+            if actual > 0 and st.button(
+                "Guardar esta cotización",
+                key=f"save_{key}",
+                use_container_width=True,
+            ):
+                save_real_quote(row, bookmaker, actual, validation)
+                st.success("Cotización guardada para validar precios reales del modelo.")
 
             if validation["status"] == "PENDIENTE":
                 st.info(
@@ -617,11 +738,13 @@ else:
                     + validation["message"]
                 )
 
-            else:
+            elif validation["status"] == "VALIDA":
                 st.success(
-                    "✅ APUESTA VÁLIDA SEGÚN V9 — "
+                    "✅ APUESTA VÁLIDA SEGÚN V9.3 — "
                     + validation["message"]
                 )
+            else:
+                st.warning("⚠️ NO AUTORIZADA — " + validation["message"])
 
             with st.expander("Riesgo y contexto"):
                 st.write(
@@ -638,6 +761,33 @@ else:
                 st.write(
                     f"**Disponibilidad:** {row['NotaDisponibilidad']}"
                 )
+                st.write(
+                    f"**Fase competitiva:** {row.get('FaseCompetitiva','—')} · "
+                    f"importancia {row.get('ImportanciaPartido','—')}/100"
+                )
+                st.write(
+                    f"**Rotación:** {row.get('RiesgoRotacion','—')} · "
+                    f"alineación {row.get('EstadoAlineacion','—')} · "
+                    f"estado {row.get('EstadoPreCuota','—')}"
+                )
+                st.write(
+                    f"**Once habitual:** local {row.get('EstadoOnceLocal','—')} "
+                    f"({pct(row.get('ContinuidadOnceLocal'))}) · visita "
+                    f"{row.get('EstadoOnceVisitante','—')} "
+                    f"({pct(row.get('ContinuidadOnceVisitante'))})"
+                )
+                st.write(f"**Contexto:** {row.get('NotaContexto','—')}")
+                st.write(
+                    f"**Dependencia:** {row.get('Dependencia','—')} · "
+                    f"Phi máx. {num(row.get('PhiMaxAbs'))} · "
+                    f"lift {num(row.get('LiftConjunto'))}"
+                )
+                gap = safe_float(row.get("BrechaRegimen"))
+                if pd.notna(gap):
+                    st.write(
+                        f"**Estabilidad temporal:** brecha {gap*100:.1f} pp · "
+                        f"estable: {'sí' if bool(row.get('RegimenEstable', True)) else 'no'}"
+                    )
                 if str(row.get("NotaFatiga", "")).strip():
                     st.write(
                         f"**Fatiga:** {row['NotaFatiga']}"
@@ -652,14 +802,14 @@ else:
 # ============================================================
 
 st.markdown("---")
-st.markdown("## 🧪 Backtest últimos 7 días")
+st.markdown("## 🧪 Backtest temporal configurable")
 
 st.info(
-    "Reconstruye V9 como si estuviéramos antes de cada partido. "
+    "Reconstruye V9.3 como si estuviéramos antes de cada partido. "
     "La cuota es de simulación; no afirma que la casa la ofreciera históricamente."
 )
 
-bt_c1, bt_c2, bt_c3 = st.columns(3)
+bt_c1, bt_c2, bt_c3, bt_c4 = st.columns(4)
 
 bt_stake = bt_c1.number_input(
     "Stake por apuesta (S/)",
@@ -684,35 +834,52 @@ default_end = (
     - pd.Timedelta(days=1)
 )
 
-bt_end = bt_c3.date_input(
+bt_days = bt_c3.selectbox(
+    "Ventana (días)",
+    [7, 30, 60, 90],
+    index=1,
+    key="bt_days",
+)
+
+bt_end = bt_c4.date_input(
     "Último día",
     value=default_end,
     key="bt_end",
 )
 
+bt_max_bets = st.slider(
+    "Máximo de apuestas simuladas",
+    min_value=10,
+    max_value=200,
+    value=60,
+    step=10,
+)
+
 if st.button(
-    "▶️ EJECUTAR BACKTEST 7 DÍAS",
+    "▶️ EJECUTAR BACKTEST TEMPORAL",
     use_container_width=True,
 ):
     try:
         with st.status(
-            "Ejecutando walk-forward V9…",
+            "Ejecutando walk-forward V9.3…",
             expanded=True,
         ) as bt_status:
 
             st.write("Usando solo información previa a cada partido…")
 
-            bt_bets, bt_summary, bt_comp = v9.backtest_v9_last_7_days(
+            bt_bets, bt_summary, bt_comp, bt_niche = v9.backtest_v9_window(
                 stake=bt_stake,
                 settlement_odds=bt_odds,
-                max_bets=30,
+                max_bets=bt_max_bets,
                 end_date=bt_end,
+                days=bt_days,
             )
 
-            st.session_state["v9_backtest"] = (
+            st.session_state["v9_2_backtest"] = (
                 bt_bets,
                 bt_summary,
                 bt_comp,
+                bt_niche,
             )
 
             bt_status.update(
@@ -727,9 +894,9 @@ if st.button(
             st.code(traceback.format_exc())
 
 
-if "v9_backtest" in st.session_state:
+if "v9_2_backtest" in st.session_state:
 
-    bt_bets, bt_summary, bt_comp = st.session_state["v9_backtest"]
+    bt_bets, bt_summary, bt_comp, bt_niche = st.session_state["v9_2_backtest"]
 
     st.caption(
         f"Ventana: {bt_summary.get('start','—')} → "
@@ -818,6 +985,18 @@ if "v9_backtest" in st.session_state:
                     hide_index=True,
                 )
 
+        if bt_niche is not None and not bt_niche.empty:
+            with st.expander("Validación por nicho"):
+                st.caption(
+                    "Un nicho necesita al menos 20 apuestas en la ventana y un "
+                    "límite inferior de acierto superior al punto de equilibrio."
+                )
+                st.dataframe(
+                    bt_niche,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
         bt_out = BytesIO()
 
         with pd.ExcelWriter(
@@ -844,36 +1023,57 @@ if "v9_backtest" in st.session_state:
                     index=False,
                 )
 
+            if bt_niche is not None and not bt_niche.empty:
+                bt_niche.to_excel(
+                    writer,
+                    sheet_name="POR_NICHO",
+                    index=False,
+                )
+
         bt_out.seek(0)
 
         st.download_button(
-            "📥 Descargar backtest 7 días",
+            "📥 Descargar backtest temporal",
             data=bt_out.getvalue(),
-            file_name="BET_BUILDER_V9_BACKTEST_7_DIAS.xlsx",
+            file_name=f"BET_BUILDER_V9_3_BACKTEST_{bt_summary.get('days', bt_days)}_DIAS.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
 
-with st.expander("ℹ️ Qué cambió en V9"):
+with st.expander("ℹ️ Qué cambió en V9.3"):
     st.markdown(
         """
         - **4.20 ya no se supone.** Es un filtro de la cuota real.
-        - Se prueban builders con **resultado / asiático, goles, córners,
-          tarjetas y mercados de 1T**.
+        - Evalúa **fase competitiva, descanso, congestión y el siguiente
+          compromiso** antes de priorizar un partido.
+        - Una competición grande **no se interpreta automáticamente como
+          once principal**: para habilitar `COTIZAR` exige alineación confirmada.
+        - Bloquea mercados sensibles cuando hay riesgo de rotación: ganador,
+          goleada, córners altos del favorito y varias líneas de primer tiempo.
+        - El modo operativo usa **máximo tres selecciones reales**. Rangos,
+          empates y córners 1T suspendidos quedan fuera de la recomendación.
+        - Cada builder lleva una **firma exacta** para impedir sustituir +1.5
+          por +1.75, 6+ córners por 7+, o asiático por hándicap de tres opciones.
         - La probabilidad es de la **combinación completa**, calculada
           directamente sobre partidos históricos similares.
-        - Si el builder queda demasiado probable, V9 intenta añadir una
-          pata con soporte estadístico para evitar combinaciones de cuota
-          muy corta como 1.67.
+        - Muestra **dependencia, lift y correlación Phi** para detectar
+          patas redundantes o inestables.
+        - El límite conservador usa **Wilson**, penaliza la búsqueda entre
+          muchas plantillas y compara el régimen reciente con el anterior.
         - **No se multiplican probabilidades marginales** para fingir que
           los mercados son independientes.
-        - Los córners de 1T solo se agregan cuando existe muestra reciente
-          suficiente; si no, no se inventan.
+        - El backtest puede cubrir 7, 30, 60 o 90 días y resume resultados
+          por competición y por nicho.
+        - El riesgo de rotación en vivo se valida prospectivamente; no se
+          introduce retroactivamente en el backtest cuando no había datos.
+        - Puedes guardar las cuotas reales para dejar de depender, con el
+          tiempo, de una cuota histórica simulada.
         - Ninguna combinación se marca válida sin ingresar la cuota real.
         """
     )
 
 st.caption(
     "Herramienta estadística experimental. La cuota y la compatibilidad "
-    "final del Bet Builder dependen de la casa y del evento. No garantiza ganancias."
+    "final dependen de la casa y del evento. No garantiza ganancias. "
+    "No uses crédito, dinero de gastos esenciales ni aumentes el monto para recuperar pérdidas."
 )

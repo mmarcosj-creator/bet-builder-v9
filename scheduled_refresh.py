@@ -4,14 +4,14 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
-import bet_builder_v9_market_optimizer as v9
+import bet_builder_v9_3_context_optimizer as v9
 import bet_builder_v8_1_robust as base
 
-DATA_DIR = Path("app_data_v9")
+DATA_DIR = Path("app_data_v9_3")
 DATA_DIR.mkdir(exist_ok=True)
 
-DATA_FILE = DATA_DIR / "latest_v9.csv"
-META_FILE = DATA_DIR / "meta_v9.json"
+DATA_FILE = DATA_DIR / "latest_v9_3.csv"
+META_FILE = DATA_DIR / "meta_v9_3.json"
 
 def main():
     df, start, end = v9.run_v9()
