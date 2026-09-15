@@ -60,7 +60,7 @@ import bet_builder_v8_1_robust as base
 import bet_builder_v9_3_context as context93
 
 
-VERSION = "V9.3-CONTEXT-ROTATION-GUARD"
+VERSION = "V9.3.1-CONTEXT-REALTIME-GUARD"
 
 CUOTA_REAL_MIN = 4.20
 ROI_OBJETIVO = 0.29
@@ -1687,6 +1687,7 @@ def optimizar_fixture(
     ):
         output.append({
             "Fecha": fr["Date"],
+            "KickoffUTC": fr.get("KickoffUTC", ""),
             "HoraPeru": fr.get("HoraPeru", ""),
             "CompKey": comp_key,
             "Competicion": info["nombre"],

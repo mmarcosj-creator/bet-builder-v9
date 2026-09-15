@@ -1,13 +1,47 @@
 """Pruebas rápidas sin descargar datos externos."""
 
+from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
 
 import bet_builder_v9_3_context_optimizer as v9
 import bet_builder_v9_3_context as ctx
+import bet_builder_v8_1_robust as base
 
 
 def main():
+    now_peru = datetime(2026, 9, 15, 17, 30, tzinfo=base.TZ_PERU)
+    start, end = base.ventana_objetivo(now_peru)
+    assert start == pd.Timestamp("2026-09-15")
+    assert end == pd.Timestamp("2026-09-21")
+
+    fixtures = pd.DataFrame([
+        {
+            "Date": pd.Timestamp("2026-09-15"),
+            "KickoffUTC": (now_peru + timedelta(minutes=20)).astimezone(
+                base.timezone.utc
+            ).isoformat(),
+            "StatusState": "pre", "Completed": False, "EventID": "future-today",
+        },
+        {
+            "Date": pd.Timestamp("2026-09-15"),
+            "KickoffUTC": (now_peru - timedelta(minutes=5)).astimezone(
+                base.timezone.utc
+            ).isoformat(),
+            "StatusState": "in", "Completed": False, "EventID": "started",
+        },
+        {
+            "Date": pd.Timestamp("2026-09-16"),
+            "KickoffUTC": (now_peru + timedelta(days=1)).astimezone(
+                base.timezone.utc
+            ).isoformat(),
+            "StatusState": "pre", "Completed": False, "EventID": "tomorrow",
+        },
+    ])
+    filtered = base.filtrar_fixtures_desde_ahora(fixtures, now=now_peru)
+    assert filtered["EventID"].tolist() == ["future-today", "tomorrow"]
+
     assert all(v9.compatible(legs) for _, legs in v9.TEMPLATES)
     assert all(code in v9.MARKETS for _, legs in v9.TEMPLATES for code in legs)
     assert v9.book_leg_count(["FAV_C4_7", "UNDER35", "CARDS_U65"]) == 4

@@ -1,6 +1,6 @@
 
 # ============================================================
-# BET BUILDER V9.3 CONTEXT PRO - STREAMLIT MOBILE
+# BET BUILDER V9.3.1 CONTEXT PRO - STREAMLIT MOBILE
 # ============================================================
 
 from io import BytesIO
@@ -17,7 +17,7 @@ import bet_builder_v9_3_context_optimizer as v9
 import bet_builder_v8_1_robust as base
 
 
-APP_VERSION = "V9.3 CONTEXT ROTATION GUARD"
+APP_VERSION = "V9.3.1 CONTEXT REALTIME GUARD"
 DATA_DIR = Path("app_data_v9_3")
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -28,7 +28,7 @@ QUOTE_FILE = DATA_DIR / "cotizaciones_reales.csv"
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Bet Builder V9.3 CONTEXT PRO",
+    page_title="Bet Builder V9.3.1 CONTEXT PRO",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -226,11 +226,42 @@ def cache_current(meta):
 def load_data():
     df = pd.read_csv(DATA_FILE)
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    return df
+    return filtrar_salida_desde_ahora(df)
+
+
+def filtrar_salida_desde_ahora(df):
+    """También limpia la caché: nunca muestra un partido ya iniciado."""
+    if df is None or df.empty:
+        return df
+    now = datetime.now(base.TZ_PERU)
+
+    if "KickoffUTC" in df.columns:
+        kickoff = pd.to_datetime(df["KickoffUTC"], utc=True, errors="coerce")
+        now_utc = pd.Timestamp(now).tz_convert("UTC")
+        known = kickoff.notna()
+        keep = (~known) | (kickoff > now_utc)
+    else:
+        hours = (
+            df["HoraPeru"].astype(str)
+            if "HoraPeru" in df.columns
+            else pd.Series("", index=df.index)
+        )
+        local_text = (
+            pd.to_datetime(df["Fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+            + " "
+            + hours
+        )
+        kickoff_local = pd.to_datetime(local_text, errors="coerce")
+        now_local = pd.Timestamp(now.replace(tzinfo=None))
+        known = kickoff_local.notna()
+        keep = (~known) | (kickoff_local > now_local)
+
+    return df.loc[keep].reset_index(drop=True)
 
 
 def run_and_save():
     df, start, end = v9.run_v9()
+    df = filtrar_salida_desde_ahora(df)
 
     df.to_csv(
         DATA_FILE,
@@ -337,7 +368,7 @@ def excel_bytes(df):
             end_row=1,
             end_column=max_col,
         )
-        ws["A1"] = "BET BUILDER V9.3 CONTEXT PRO — COTIZAR Y VALIDAR CUOTA REAL"
+        ws["A1"] = "BET BUILDER V9.3.1 CONTEXT PRO — COTIZAR Y VALIDAR CUOTA REAL"
         ws["A1"].font = Font(bold=True, color="FFFFFF", size=17)
         ws["A1"].fill = PatternFill("solid", fgColor="102A43")
         ws["A1"].alignment = Alignment(horizontal="center")
@@ -465,7 +496,7 @@ def excel_bytes(df):
 st.markdown(
     """
     <div class="hero">
-      <h1>⚽ Bet Builder V9.3 CONTEXT PRO</h1>
+      <h1>⚽ Bet Builder V9.3.1 CONTEXT PRO</h1>
       <p><b>Rotación, fase competitiva, calendario y once confirmado.</b></p>
       <span class="pill blue">CUOTA REAL ≥ 4.20</span>
       <span class="pill amber">COTIZAR</span>
@@ -478,7 +509,7 @@ st.markdown(
 st.markdown(
     """
     <div class="info-box">
-      <b>Cambio clave:</b> V9.3 no supone que Champions, Libertadores u otro
+      <b>Cambio clave:</b> V9.3.1 no supone que Champions, Libertadores u otro
       torneo garantice el once principal. Evalúa fase, descanso, carga y el
       siguiente compromiso; exige alineación confirmada antes de habilitar
       una apuesta y bloquea builders distintos del generado por el modelo.
@@ -499,19 +530,19 @@ try:
         data = load_data()
     else:
         with st.status(
-            "Construyendo V9.3 para los próximos 7 días…",
+            "Construyendo V9.3.1 para los próximos 7 días…",
             expanded=True,
         ) as status:
             st.write("Descargando histórico y calendario…")
             data, meta = run_and_save()
             status.update(
-                label="V9.3 actualizado",
+                label="V9.3.1 actualizado",
                 state="complete",
                 expanded=False,
             )
 
 except Exception as e:
-    st.error("No fue posible ejecutar V9.3.")
+    st.error("No fue posible ejecutar V9.3.1.")
     st.code(str(e))
 
     with st.expander("Detalle técnico"):
@@ -531,7 +562,7 @@ c1, c2 = st.columns(2)
 
 with c1:
     if st.button(
-        "🔄 Actualizar V9.3",
+        "🔄 Actualizar V9.3.1",
         use_container_width=True,
         type="primary",
     ):
@@ -553,7 +584,7 @@ with c1:
 with c2:
     if not data.empty:
         st.download_button(
-            "📊 Excel V9.3 para cotizar",
+            "📊 Excel V9.3.1 para cotizar",
             data=excel_bytes(data),
             file_name="BET_BUILDER_V9_3_COTIZAR_4_20.xlsx",
             mime=(
@@ -569,6 +600,10 @@ if meta:
         f"{meta.get('window_end','—')} · "
         f"Versión: {meta.get('version',APP_VERSION)}"
     )
+    st.caption(
+        "Incluye partidos de hoy que todavía no comenzaron; los iniciados "
+        "se eliminan usando la hora oficial de Perú."
+    )
 
 
 # ============================================================
@@ -576,7 +611,7 @@ if meta:
 # ============================================================
 
 if data.empty:
-    st.warning("No hay candidatos V9.3 modelables en esta ventana.")
+    st.warning("No hay candidatos V9.3.1 modelables en esta ventana.")
 else:
     # Resumen
     matches = data["RankingPartido"].nunique()
@@ -740,7 +775,7 @@ else:
 
             elif validation["status"] == "VALIDA":
                 st.success(
-                    "✅ APUESTA VÁLIDA SEGÚN V9.3 — "
+                    "✅ APUESTA VÁLIDA SEGÚN V9.3.1 — "
                     + validation["message"]
                 )
             else:
@@ -805,7 +840,7 @@ st.markdown("---")
 st.markdown("## 🧪 Backtest temporal configurable")
 
 st.info(
-    "Reconstruye V9.3 como si estuviéramos antes de cada partido. "
+    "Reconstruye V9.3.1 como si estuviéramos antes de cada partido. "
     "La cuota es de simulación; no afirma que la casa la ofreciera históricamente."
 )
 
@@ -861,7 +896,7 @@ if st.button(
 ):
     try:
         with st.status(
-            "Ejecutando walk-forward V9.3…",
+            "Ejecutando walk-forward V9.3.1…",
             expanded=True,
         ) as bt_status:
 
@@ -1040,7 +1075,7 @@ if "v9_2_backtest" in st.session_state:
             use_container_width=True,
         )
 
-with st.expander("ℹ️ Qué cambió en V9.3"):
+with st.expander("ℹ️ Qué cambió en V9.3.1"):
     st.markdown(
         """
         - **4.20 ya no se supone.** Es un filtro de la cuota real.

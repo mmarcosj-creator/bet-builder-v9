@@ -66,8 +66,10 @@ TOP_N = 30
 # Perú: UTC-5 todo el año. Evita ZoneInfo/tzdata en Pydroid.
 TZ_PERU = timezone(timedelta(hours=-5), name="PET")
 
-HORA_CORTE = 8
 DIAS_VENTANA = 7
+# Conserva cualquier partido del día actual que todavía no haya comenzado.
+# Puede aumentarse manualmente si se desea un margen operativo adicional.
+MARGEN_PREPARTIDO_MINUTOS = 0
 
 CUOTA_COMBINADA_MIN = 4.20
 ROI_OBJETIVO = 0.29
@@ -1783,16 +1785,15 @@ def knn_probabilidades(
 # VENTANA FUTURA ESPN
 # ============================================================
 
-def ventana_objetivo():
-    now = datetime.now(TZ_PERU)
+def ventana_objetivo(now=None):
+    """Ventana móvil: desde hoy, sin excluir todo el día por una hora de corte."""
+    now = now or datetime.now(TZ_PERU)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=TZ_PERU)
+    else:
+        now = now.astimezone(TZ_PERU)
     hoy = pd.Timestamp(now.date())
-
-    inicio = (
-        hoy
-        if now.hour < HORA_CORTE
-        else hoy + pd.Timedelta(days=1)
-    )
-
+    inicio = hoy
     fin = inicio + pd.Timedelta(days=DIAS_VENTANA - 1)
 
     return inicio, fin
@@ -1860,6 +1861,11 @@ def extraer_future_event(ev, comp_key):
     except Exception:
         stage_text = ""
 
+    status_type = (ev.get("status") or {}).get("type") or {}
+    status_state = str(status_type.get("state") or "").lower()
+    status_name = str(status_type.get("name") or status_type.get("description") or "")
+    completed = bool(status_type.get("completed", False)) or status_state == "post"
+
     return {
         "Date": pd.Timestamp(
             dt.tz_convert(TZ_PERU).date()
@@ -1878,6 +1884,9 @@ def extraer_future_event(ev, comp_key):
         "HomeESPNID": ht.get("id", ""),
         "AwayESPNID": at.get("id", ""),
         "EventID": ev.get("id", ""),
+        "StatusState": status_state,
+        "StatusName": status_name,
+        "Completed": completed,
         "EspnH": hodd,
         "EspnD": dodd,
         "EspnA": aodd,
@@ -1887,6 +1896,38 @@ def extraer_future_event(ev, comp_key):
         "VenueCountry": venue["VenueCountry"],
         "FuenteFixture": "ESPN",
     }
+
+
+def filtrar_fixtures_desde_ahora(
+    fixtures,
+    now=None,
+    margen_minutos=MARGEN_PREPARTIDO_MINUTOS,
+):
+    """Elimina únicamente partidos iniciados/terminados o demasiado próximos."""
+    if fixtures is None or fixtures.empty:
+        return fixtures
+
+    now = now or datetime.now(TZ_PERU)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=TZ_PERU)
+    else:
+        now = now.astimezone(TZ_PERU)
+    threshold_utc = pd.Timestamp(now).tz_convert("UTC") + pd.Timedelta(
+        minutes=int(margen_minutos)
+    )
+
+    def keep(row):
+        state = str(row.get("StatusState", "")).lower()
+        if bool(row.get("Completed", False)) or state in {"in", "post"}:
+            return False
+        kickoff = pd.to_datetime(row.get("KickoffUTC"), utc=True, errors="coerce")
+        if pd.isna(kickoff):
+            # Sin hora fiable, no autoriza un partido del mismo día.
+            return pd.Timestamp(row.get("Date")) > pd.Timestamp(now.date())
+        return kickoff > threshold_utc
+
+    mask = fixtures.apply(keep, axis=1)
+    return fixtures.loc[mask].reset_index(drop=True)
 
 
 def descargar_fixtures_objetivo(inicio, fin):
@@ -1929,7 +1970,8 @@ def descargar_fixtures_objetivo(inicio, fin):
             "ESPN no devolvió partidos de las competiciones objetivo"
         )
 
-    return normalizar_df(pd.DataFrame(rows))
+    fixtures = normalizar_df(pd.DataFrame(rows))
+    return filtrar_fixtures_desde_ahora(fixtures)
 
 
 # ============================================================
