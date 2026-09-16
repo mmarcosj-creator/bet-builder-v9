@@ -58,7 +58,7 @@ st.markdown(
       .market-row.rojo {border-left-color:#ef4444; background:rgba(239,68,68,.065);}
       .market-name {font-weight:780;}
       .pick {font-weight:900;}
-      .status-emoji {font-size:1.2rem;}
+      .status-emoji {font-size:1.35rem;}
       .info-box {padding:.75rem .85rem; border-radius:14px; background:rgba(59,130,246,.08);
                  border:1px solid rgba(59,130,246,.18); margin:.65rem 0;}
       .stButton button,.stDownloadButton button {min-height:45px; border-radius:13px; font-weight:800;}
@@ -76,6 +76,25 @@ def safe_float(value, default=np.nan):
         return value if np.isfinite(value) else default
     except Exception:
         return default
+
+def apply_gatuno_criteria(markets_df):
+    """Aplica los umbrales dinámicos antes de mostrar los datos en pantalla o guardarlos."""
+    if markets_df is None or markets_df.empty:
+        return markets_df
+    df = markets_df.copy()
+    for idx, row in df.iterrows():
+        prob = safe_float(row.get('Probabilidad', 0))
+        pronostico = str(row.get('Pronostico', '')).strip().upper()
+        # Si no hay datos, es nulo, o dice SIN PRONOSTICO
+        if pd.isna(prob) or pronostico in ["", "SIN PRONOSTICO", "NAN"]:
+            df.at[idx, 'Semaforo'] = "ROJO"
+        elif prob >= 0.60:
+            df.at[idx, 'Semaforo'] = "VERDE"
+        elif prob >= 0.50:
+            df.at[idx, 'Semaforo'] = "AMARILLO"
+        else:
+            df.at[idx, 'Semaforo'] = "ROJO"
+    return df
 
 def load_meta():
     if not META_FILE.exists():
@@ -110,6 +129,10 @@ def run_and_save():
     matches, markets, metrics, start, end = v10.run_v10()
     matches = filter_not_started(matches)
     markets = filter_not_started(markets)
+    
+    # Interceptamos y aplicamos la nueva lógica Gatuna antes de guardar
+    markets = apply_gatuno_criteria(markets)
+    
     matches.to_csv(MATCH_FILE, index=False, encoding="utf-8-sig")
     markets.to_csv(MARKET_FILE, index=False, encoding="utf-8-sig")
     metrics.to_csv(METRIC_FILE, index=False, encoding="utf-8-sig")
@@ -172,10 +195,10 @@ st.markdown(
     f"""
     <div class="hero">
       <h1>🐾 Forecaster Fútbol V10 Gatuno</h1>
-      <p>Decisiones claras, rápidas y directas. Análisis técnico reservado para el Excel.</p>
-      <span class="pill green">🟢 VERDE = ALTA EVIDENCIA</span>
-      <span class="pill amber">🟡 AMARILLO = PRECAUCIÓN</span>
-      <span class="pill red">🔴 ROJO = RIESGOSO</span>
+      <p>Decisiones ágiles, sin miedo al éxito. Evaluando probabilidades reales.</p>
+      <span class="pill green">🟢 🤩 ALTA EVIDENCIA (>60%)</span>
+      <span class="pill amber">🟡 🧐 PRECAUCIÓN (50-60%)</span>
+      <span class="pill red">🔴 🙀 RIESGOSO (&lt;50%)</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -186,8 +209,9 @@ try:
     if cache_current(meta):
         matches, markets, metrics = load_data()
     else:
-        with st.status("Preparando análisis (esto puede tardar unos minutos en el primer arranque)…", expanded=True):
+        with st.status("🐾 Afilando garras y preparando análisis…", expanded=True):
             matches, markets, metrics, meta = run_and_save()
+        st.toast("✅ ¡Cacería terminada! Pronósticos actualizados.", icon="🐾")
 except Exception as exc:
     st.error("Error al ejecutar V10 Gatuno.")
     st.code(str(exc))
@@ -197,15 +221,16 @@ c1, c2 = st.columns(2)
 with c1:
     if st.button("🔄 Forzar recálculo completo", use_container_width=True):
         try:
-            with st.status("Recalibrando motores…", expanded=True):
+            with st.status("🐾 Recalibrando instintos y motores…", expanded=True):
                 matches, markets, metrics, meta = run_and_save()
+            st.toast("✅ ¡Cacería terminada! Pronósticos actualizados.", icon="🐾")
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
 with c2:
     if not matches.empty:
         st.download_button(
-            "📊 Descargar Datos Técnicos (Excel)",
+            "📊 Descargar Datos (Excel)",
             data=excel_bytes(matches, markets, metrics),
             file_name="V10_GATUNO_TECNICO.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -249,8 +274,15 @@ for _, match in visible_matches.iterrows():
     )
     for _, row in subset.iterrows():
         color_class = str(row.get("Semaforo", "ROJO")).lower()
-        emoji = "🟢" if color_class == "verde" else "🟡" if color_class == "amarillo" else "🔴"
         
+        # Asignación de emojis según el sentimiento del color
+        if color_class == "verde":
+            emoji = "🟢 🤩"
+        elif color_class == "amarillo":
+            emoji = "🟡 🧐"
+        else:
+            emoji = "🔴 🙀"
+            
         st.markdown(
             f"""
             <div class="market-row {color_class}">
