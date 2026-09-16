@@ -1,4 +1,4 @@
-"""Monitor V10.3 - Aprendizaje real sin tocar umbrales a mano.
+"""Monitor OOS V10.4 - calidad del modelo, separado del ajuste adaptativo.
 
 Este modulo responde a una pregunta distinta de auditoria_v10.py:
 
@@ -28,7 +28,8 @@ Lo que SI hace este modulo, con los datos que ya existen:
   3. Cruza la calibracion que el semaforo promete (p. ej. "verde exige
      probabilidad >=68%") contra la tasa de acierto real que ya mide
      auditoria_v10.calcular_metricas(), y muestra la brecha. Esto es
-     puramente diagnostico: nunca reescribe umbrales automaticamente.
+     puramente diagnostico. Las propuestas confirmables viven en
+     adaptive_monitor.py y nunca reescriben coeficientes del modelo.
 """
 
 from __future__ import annotations
@@ -48,6 +49,12 @@ METRICS_LOG_COLUMNS = [
     "RunEn", "Modelo", "Target", "Tipo", "N_Validacion",
     "Brier", "MAE", "ECE", "MejoraBrier", "MejoraMAE", "SuperaBase", "CalidadModelo",
 ]
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "si", "sí", "yes"}
 
 
 def registrar_metricas(bundle_metrics: pd.DataFrame, log_path: str | Path, run_en: str | None = None) -> pd.DataFrame:
@@ -71,7 +78,7 @@ def registrar_metricas(bundle_metrics: pd.DataFrame, log_path: str | Path, run_e
             "ECE": row.get("ECE", np.nan),
             "MejoraBrier": row.get("MejoraBrier", np.nan),
             "MejoraMAE": row.get("MejoraMAE", np.nan),
-            "SuperaBase": bool(row.get("SuperaBase", False)),
+            "SuperaBase": _as_bool(row.get("SuperaBase", False)),
             "CalidadModelo": row.get("CalidadModelo", np.nan),
         })
     nuevo = pd.concat([log, pd.DataFrame(filas)], ignore_index=True)
@@ -115,7 +122,7 @@ def detectar_degradacion(log: pd.DataFrame, ventana: int = 10, tolerancia: float
                 "Severidad": "ALTA" if empeoro > 2 * tolerancia else "MEDIA",
             })
 
-        if bool(previas.iloc[-1].get("SuperaBase", False)) and not bool(actual.get("SuperaBase", False)):
+        if _as_bool(previas.iloc[-1].get("SuperaBase", False)) and not _as_bool(actual.get("SuperaBase", False)):
             avisos.append({
                 "Modelo": modelo,
                 "Motivo": "Dejo de superar la base OOS en la corrida mas reciente (antes si la superaba)",

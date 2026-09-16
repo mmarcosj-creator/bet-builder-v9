@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 import bet_forecaster_v10 as v10
+import bet_builder_v8_1_robust as base
 import gatuno_audit as audit
 
 
@@ -72,8 +73,12 @@ def test_immutable_history() -> None:
         third, third_stats = audit.record_predictions(
             transitioned, path=path, now_utc=pd.Timestamp("2098-12-31T02:00:00Z")
         )
-        assert third_stats["insertados"] == 2
-        assert len(third) == 4
+        assert third_stats["insertados"] == 0
+        assert len(third) == 2
+        synced = audit.sync_future_signals(
+            transitioned, path=path, now_utc=pd.Timestamp("2098-12-31T02:00:00Z")
+        )
+        assert set(synced["SemaforoFinal"]) == {"AMARILLO"}
 
 
 def test_grading_all_markets() -> None:
@@ -121,6 +126,41 @@ def test_audit_no_fake_zero() -> None:
     assert "SIN RESULTADOS EVALUADOS" in summary["message"]
 
 
+def test_market_failure_is_isolated() -> None:
+    original_probability = v10._fit_probability_model
+    original_count = v10._fit_count_model
+
+    def probability_failure(*args, **kwargs):
+        raise RuntimeError("muestra insuficiente simulada")
+
+    def count_failure(*args, **kwargs):
+        raise RuntimeError("conteo insuficiente simulado")
+
+    try:
+        v10._fit_probability_model = probability_failure
+        v10._fit_count_model = count_failure
+        bundle = v10.train_models(pd.DataFrame({"Date": [pd.Timestamp("2026-01-01")]}))
+    finally:
+        v10._fit_probability_model = original_probability
+        v10._fit_count_model = original_count
+
+    assert len(bundle.probability_models) == 5
+    assert len(bundle.count_models) == 4
+    assert all(model.model is None for model in bundle.probability_models.values())
+    assert all(model.model is None for model in bundle.count_models.values())
+    assert set(bundle.metrics["EstadoValidacion"]) == {"SIN COBERTURA"}
+
+
+def test_fast_runtime_restores_limits() -> None:
+    original_calls = base.CONTEXT_MAX_SUMMARY_CALLS
+    original_timeout_mode = __import__("os").environ.get("GATUNO_FAST_MODE")
+    with v10._runtime_limits(True):
+        assert base.CONTEXT_MAX_SUMMARY_CALLS == 72
+        assert __import__("os").environ.get("GATUNO_FAST_MODE") == "1"
+    assert base.CONTEXT_MAX_SUMMARY_CALLS == original_calls
+    assert __import__("os").environ.get("GATUNO_FAST_MODE") == original_timeout_mode
+
+
 def main() -> None:
     tests = [
         test_oos_guard,
@@ -128,6 +168,8 @@ def main() -> None:
         test_grading_all_markets,
         test_safety_gate_and_best_option,
         test_audit_no_fake_zero,
+        test_market_failure_is_isolated,
+        test_fast_runtime_restores_limits,
     ]
     for test in tests:
         test()

@@ -12,6 +12,8 @@ import pandas as pd
 import bet_builder_v8_1_robust as base
 import bet_forecaster_v10 as v10
 import gatuno_audit as audit
+import adaptive_monitor as adaptive
+import model_monitor as quality_monitor
 
 
 DATA_DIR = Path("app_data_v10")
@@ -37,10 +39,16 @@ def main() -> None:
     matches = filter_not_started(matches)
     markets = filter_not_started(markets)
     markets = audit.adaptive_safety_gate(markets, history)
-    _, recording = audit.record_predictions(markets)
+    markets = adaptive.apply_policy(markets, adaptive.load_policy())
+    history, recording = audit.record_predictions(markets)
+    adaptive.update_proposals(history)
     atomic_csv(matches, DATA_DIR / "latest_matches.csv")
     atomic_csv(markets, DATA_DIR / "latest_markets.csv")
     atomic_csv(metrics, DATA_DIR / "latest_validation.csv")
+    try:
+        quality_monitor.registrar_metricas(metrics, DATA_DIR / "model_metrics_log.csv")
+    except Exception:
+        pass
     metadata = {
         "generated_at": datetime.now(base.TZ_PERU).isoformat(),
         "window_start": str(pd.Timestamp(start).date()),

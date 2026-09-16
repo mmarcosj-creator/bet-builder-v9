@@ -316,6 +316,7 @@ ARCHIVO_CSV = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_TOP30.csv")
 ARCHIVO_BACKTEST = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_BACKTEST.csv")
 ARCHIVO_VARIANTES = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_VARIANTES.csv")
 ARCHIVO_LOG = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_LOG.txt")
+BUNDLED_HISTORY_PATH = Path(__file__).resolve().parent / "bundled_data" / "historical_fallback.csv.gz"
 
 
 # ============================================================
@@ -352,7 +353,19 @@ def parece_html(raw):
     )
 
 
-def descargar_bytes(url, timeout=35, headers=None, reintentos=2):
+def descargar_bytes(url, timeout=None, headers=None, reintentos=None):
+    """Descarga con limites aptos para ejecucion interactiva.
+
+    En Streamlit una peticion bloqueada durante 35 segundos y repetida cientos
+    de veces puede provocar que el proceso sea reiniciado antes de guardar la
+    cache.  El modo rapido usa un unico intento de 12 segundos.  El proceso
+    programado conserva los limites amplios originales.
+    """
+    fast_mode = os.environ.get("GATUNO_FAST_MODE", "0") == "1"
+    if timeout is None:
+        timeout = 6 if fast_mode else 35
+    if reintentos is None:
+        reintentos = 1 if fast_mode else 2
     ultimo = None
 
     hdr = headers or {
@@ -403,7 +416,7 @@ def descargar_bytes(url, timeout=35, headers=None, reintentos=2):
     raise RuntimeError(f"No se pudo descargar {url}: {ultimo}")
 
 
-def descargar_json(url, timeout=35):
+def descargar_json(url, timeout=None):
     raw = descargar_bytes(
         url,
         timeout=timeout,
@@ -751,6 +764,12 @@ def descargar_historico_fd():
         except Exception as e:
             log(f"  ZIP falló: {e}")
 
+            # Si la red completa no respondio, probar cada liga por separado
+            # multiplica el bloqueo (varios timeouts por temporada). En la
+            # interfaz rapida se continua con las otras fuentes/temporadas.
+            if os.environ.get("GATUNO_FAST_MODE", "0") == "1":
+                continue
+
             for div, comp_key in divs.items():
                 url = f"{BASE_HIST_FD}{temp}/{div}.csv"
 
@@ -965,7 +984,15 @@ def eventos_scoreboard_espn(league, start_date, end_date):
     try:
         return descargar_json(url).get("events", [])
     except Exception:
-        # fallback día a día
+        # En modo interactivo no se permiten cientos de consultas diarias si
+        # ESPN rechaza un intervalo historico largo. Es preferible declarar
+        # esa competicion sin cobertura y mostrarla en rojo que bloquear toda
+        # la aplicacion durante varios minutos.
+        fast_mode = os.environ.get("GATUNO_FAST_MODE", "0") == "1"
+        if fast_mode:
+            return []
+
+        # fallback día a día solo para ventanas cortas (calendario/resultados)
         eventos = []
         d = start_date
 
@@ -1160,13 +1187,30 @@ def descargar_historico_espn_sam():
 # HISTORICO TOTAL
 # ============================================================
 
+def cargar_historico_empaquetado():
+    """Respaldo compacto para que un servidor remoto lento no bloquee la app."""
+    try:
+        if not BUNDLED_HISTORY_PATH.exists():
+            return pd.DataFrame()
+        fallback = pd.read_csv(BUNDLED_HISTORY_PATH, compression="gzip")
+        fallback["Date"] = pd.to_datetime(fallback["Date"], errors="coerce")
+        fallback = fallback.dropna(
+            subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
+        )
+        return normalizar_df(fallback)
+    except Exception as exc:
+        log(f"Historico empaquetado no disponible: {exc}")
+        return pd.DataFrame()
+
+
 def descargar_historico_total():
     fd = descargar_historico_fd()
     sam = descargar_historico_espn_sam()
+    bundled = cargar_historico_empaquetado()
 
     frames = [
         x
-        for x in (fd, sam)
+        for x in (fd, sam, bundled)
         if x is not None and not x.empty
     ]
 
@@ -1186,6 +1230,13 @@ def descargar_historico_total():
             "Date", "HomeTeam", "AwayTeam",
             "FTHG", "FTAG",
         ]
+    )
+
+    # Las fuentes remotas van primero y conservan prioridad. El respaldo solo
+    # completa temporadas/equipos ausentes; no reemplaza una observacion nueva.
+    h = h.drop_duplicates(
+        subset=["Date", "CompKey", "HomeTeam", "AwayTeam"],
+        keep="first",
     )
 
     return h.sort_values(
@@ -4535,14 +4586,19 @@ def parse_h1_corners_from_summary(
     }
 
 
-def descargar_contexto_h1():
+def descargar_contexto_h1(comp_keys=None):
+    requested = {str(x) for x in (comp_keys or []) if str(x)}
+    context_cache = CONTEXT_CACHE
+    if requested:
+        suffix = "_".join(sorted(requested))
+        context_cache = os.path.join(CACHE_DIR, f"contexto_h1_{suffix}.csv")
     # Cache corto: el objetivo es régimen actual.
     if os.path.exists(
-        CONTEXT_CACHE
+        context_cache
     ):
         try:
             df = pd.read_csv(
-                CONTEXT_CACHE
+                context_cache
             )
 
             df["Date"] = pd.to_datetime(
@@ -4553,7 +4609,7 @@ def descargar_contexto_h1():
             age_h = (
                 time.time()
                 - os.path.getmtime(
-                    CONTEXT_CACHE
+                    context_cache
                 )
             ) / 3600.0
 
@@ -4590,6 +4646,8 @@ def descargar_contexto_h1():
     calls = 0
 
     for comp_key, info in COMPETICIONES.items():
+        if requested and comp_key not in requested:
+            continue
         try:
             events = eventos_scoreboard_espn(
                 info["espn"],
@@ -4907,7 +4965,7 @@ def descargar_contexto_h1():
     if not df.empty:
         try:
             df.to_csv(
-                CONTEXT_CACHE,
+                context_cache,
                 index=False,
                 encoding="utf-8-sig",
             )

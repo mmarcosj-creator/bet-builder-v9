@@ -1,9 +1,9 @@
-"""Auditoría prospectiva y compuerta adaptativa para V10.3 Gatuno PRO.
+"""Auditoría prospectiva para V10.4 Gatuno Adaptativo.
 
 Las predicciones se congelan antes del partido y nunca se sobrescriben. Los
 resultados oficiales se usan para cerrar cada mercado y medir calibración. El
-aprendizaje de auditoría es conservador: solo puede degradar una señal futura;
-nunca convierte una señal amarilla o roja en verde.
+aprendizaje de auditoría es conservador: ``adaptive_monitor`` solo puede
+degradar una señal futura confirmada; nunca convierte amarillo o rojo en verde.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import bet_builder_v8_1_robust as base
 
 DATA_DIR = Path("app_data_v10")
 HISTORY_FILE = DATA_DIR / "historial_pronosticos_v103.csv"
+LEGACY_HISTORY_FILE = DATA_DIR / "historial_apuestas.csv"
 RESOLVED_STATES = {"ACERTADO", "FALLADO"}
 ABSTAIN_CODES = {"", "ABSTAIN", "SIN PRONOSTICO", "NAN"}
 
@@ -54,8 +55,73 @@ def _atomic_csv(frame: pd.DataFrame, path: str | Path) -> None:
     os.replace(temporary, target)
 
 
+def _migrate_legacy_history(source_path: Path) -> pd.DataFrame:
+    """Convierte el historial V10.3 heredado sin perder resultados cerrados."""
+    try:
+        legacy = pd.read_csv(source_path)
+    except Exception:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for _, source in legacy.iterrows():
+        code = _fallback_market_code(source)
+        if code == "UNKNOWN":
+            continue
+        model_signal = str(source.get("Semaforo", "ROJO"))
+        material = {
+            **source.to_dict(),
+            "MercadoCodigo": code,
+            "SemaforoFinal": model_signal,
+        }
+        rows.append({
+            "PredictionID": prediction_id(material),
+            "EventKey": event_key(source),
+            "EventID": str(source.get("EventID", "")),
+            "KickoffUTC": str(source.get("KickoffUTC", "")),
+            "Fecha": str(source.get("Fecha", "")),
+            "HoraPeru": str(source.get("HoraPeru", "")),
+            "CompKey": str(source.get("CompKey", "")),
+            "Competicion": str(source.get("Competicion", "")),
+            "Local": str(source.get("Local", "")),
+            "Visitante": str(source.get("Visitante", "")),
+            "HomeESPNID": "",
+            "AwayESPNID": "",
+            "Mercado": str(source.get("Mercado", "")),
+            "MercadoCodigo": code,
+            "Linea": str(source.get("Linea", "")),
+            "Pronostico": str(source.get("Pronostico", "")),
+            "PronosticoCodigo": _fallback_prediction_code(code, source.get("Pronostico", "")),
+            "Probabilidad": _safe_float(source.get("Probabilidad")),
+            "PConservadora": np.nan,
+            "Fiabilidad": np.nan,
+            "Soporte": 0,
+            "ModeloSuperaBase": False,
+            "SemaforoModelo": model_signal,
+            "SemaforoFinal": model_signal,
+            "Motivo": "Migrado desde historial_apuestas.csv",
+            "Version": str(source.get("Version", "V10.3-HEREDADO")),
+            "EmitidoEnUTC": str(source.get("RegistradoEn", "")),
+            "EstadoResultado": str(source.get("EstadoResultado", "PENDIENTE")),
+            "ResultadoReal": str(source.get("ResultadoReal", "")),
+            "CerradoEnUTC": str(source.get("ResueltoEn", "")),
+            "FuenteResultado": "MIGRACION_V10_3",
+            "MotivoCierre": "Resultado conservado de la auditoria anterior",
+            "GolesLocal": np.nan,
+            "GolesVisitante": np.nan,
+            "Goles1T": np.nan,
+            "Corners1T": np.nan,
+            "TarjetasAmarillas": np.nan,
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).drop_duplicates(subset=["PredictionID"], keep="first")
+
+
 def load_history(path: str | Path = HISTORY_FILE) -> pd.DataFrame:
     target = Path(path)
+    if not target.exists() and target == HISTORY_FILE and LEGACY_HISTORY_FILE.exists():
+        migrated = _migrate_legacy_history(LEGACY_HISTORY_FILE)
+        if not migrated.empty:
+            _atomic_csv(migrated, target)
     if not target.exists():
         return pd.DataFrame()
     try:
@@ -152,6 +218,9 @@ def record_predictions(
 
     old = load_history(path)
     existing = set(old.get("PredictionID", pd.Series(dtype=str)).astype(str))
+    existing_natural = set()
+    if not old.empty and {"EventKey", "MercadoCodigo"}.issubset(old.columns):
+        existing_natural = set(zip(old["EventKey"].astype(str), old["MercadoCodigo"].astype(str)))
     emitted = datetime.now(timezone.utc).isoformat()
     records: list[dict[str, Any]] = []
     omitted = 0
@@ -172,7 +241,8 @@ def record_predictions(
             continue
 
         pid = prediction_id({**source.to_dict(), "MercadoCodigo": market_code})
-        if pid in existing:
+        natural_key = (event_key(source), market_code)
+        if pid in existing or natural_key in existing_natural:
             omitted += 1
             continue
         model_signal = str(source.get("SemaforoModelo", source.get("Semaforo", "ROJO")))
@@ -219,6 +289,7 @@ def record_predictions(
             }
         )
         existing.add(pid)
+        existing_natural.add(natural_key)
 
     if records:
         new = pd.DataFrame(records)
@@ -514,8 +585,17 @@ def audit_summary(history: pd.DataFrame) -> tuple[dict[str, Any], pd.DataFrame]:
     }, detail
 
 
-def adaptive_safety_gate(markets: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
-    """Aplica un cortacircuito histórico sin promocionar señales."""
+def adaptive_safety_gate(
+    markets: pd.DataFrame,
+    history: pd.DataFrame,
+    apply_history_gate: bool = False,
+) -> pd.DataFrame:
+    """Aplica las protecciones estructurales sin promocionar señales.
+
+    El antiguo descenso automatico basado en historial queda desactivado por
+    defecto. V10.4 delega esa decision a ``adaptive_monitor`` para exigir una
+    muestra semanal, dejar una propuesta trazable y pedir confirmacion.
+    """
     if markets is None or markets.empty:
         return markets
     result = markets.copy()
@@ -526,7 +606,7 @@ def adaptive_safety_gate(markets: pd.DataFrame, history: pd.DataFrame) -> pd.Dat
     result["AjusteAuditoria"] = "SIN AJUSTE"
 
     resolved = pd.DataFrame()
-    if history is not None and not history.empty and "EstadoResultado" in history:
+    if apply_history_gate and history is not None and not history.empty and "EstadoResultado" in history:
         resolved = history[history["EstadoResultado"].astype(str).isin(RESOLVED_STATES)].copy()
         if not resolved.empty:
             resolved["Correcto"] = resolved["EstadoResultado"].eq("ACERTADO")
@@ -604,3 +684,46 @@ def adaptive_safety_gate(markets: pd.DataFrame, history: pd.DataFrame) -> pd.Dat
             )
             result.at[score.idxmax(), "MejorOpcion"] = True
     return result
+
+
+def sync_future_signals(
+    markets: pd.DataFrame,
+    path: str | Path = HISTORY_FILE,
+    now_utc: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Sincroniza colores ajustados mientras el partido aun no comienza.
+
+    El pronostico y su probabilidad no se cambian. Solo se actualiza la capa de
+    seguridad confirmada por el usuario. Al llegar el kickoff, la fila queda
+    congelada y esta funcion deja de tocarla.
+    """
+    history = load_history(path)
+    if history.empty or markets is None or markets.empty:
+        return history
+    now = now_utc or pd.Timestamp.now(tz="UTC")
+    now = pd.Timestamp(now)
+    now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+    changed = False
+    for _, source in markets.iterrows():
+        key = event_key(source)
+        code = str(source.get("MercadoCodigo", "")) or _fallback_market_code(source)
+        kickoff = pd.to_datetime(source.get("KickoffUTC"), utc=True, errors="coerce")
+        if pd.isna(kickoff) or kickoff <= now:
+            continue
+        mask = (
+            history["EventKey"].astype(str).eq(str(key))
+            & history["MercadoCodigo"].astype(str).eq(code)
+            & history["EstadoResultado"].astype(str).eq("PENDIENTE")
+        )
+        if not mask.any():
+            continue
+        final_signal = str(source.get("SemaforoFinal", source.get("Semaforo", "ROJO")))
+        history.loc[mask, "SemaforoFinal"] = final_signal
+        if "Motivo" in history:
+            adjustment = str(source.get("AjusteAdaptativo", "")).strip()
+            if adjustment and adjustment != "SIN AJUSTE":
+                history.loc[mask, "Motivo"] = adjustment
+        changed = True
+    if changed:
+        _atomic_csv(history, path)
+    return history

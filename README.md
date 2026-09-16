@@ -1,8 +1,10 @@
-# Forecaster Fútbol V10.3 Gatuno PRO
+# Forecaster Fútbol V10.4 Gatuno Adaptativo
 
-V10.3 es un sistema experimental de pronóstico **individual** por partido. Muestra seis mercados con semáforo simple y mantiene una auditoría prospectiva inmutable.
+V10.4 es un sistema experimental de pronósticos **individuales** por partido. Cierra resultados, mide el desempeño por mercado y propone ajustes conservadores sin modificar criterios a escondidas.
 
-## Qué muestra
+## Pantalla principal
+
+Cada encuentro muestra seis mercados separados:
 
 1. Resultado 1X2: local, empate o visitante.
 2. Goles del primer tiempo: más/menos de 1.5.
@@ -11,31 +13,41 @@ V10.3 es un sistema experimental de pronóstico **individual** por partido. Mues
 5. El local marca: sí/no sobre 0.5.
 6. El visitante marca: sí/no sobre 0.5.
 
-No genera hándicaps asiáticos, combinadas ni cuotas estimadas.
+No genera hándicaps asiáticos, combinadas ni cuotas inventadas.
 
-## Significado de colores
+## Colores Gatunos
 
-- **VERDE:** el modelo superó su referencia fuera de muestra, cumple soporte, límite conservador y fiabilidad, la alineación está confirmada y no existe alerta alta de rotación.
-- **AMARILLO:** señal intermedia o a la espera de alineación/contexto.
-- **ROJO:** no recomendada; modelo sin ventaja fuera de muestra, soporte insuficiente o mercado no evaluable.
-- **MEJOR OPCIÓN:** máximo una verde por partido. No significa certeza ni invita a combinar mercados.
+- 🟢 **Buena evidencia:** superó la referencia temporal y cumple probabilidad, límite conservador, fiabilidad, soporte, alineación y contexto.
+- 🟡 **Precaución:** señal intermedia o una verde degradada por una compuerta de seguridad.
+- 🔴 **No recomendada:** evidencia insuficiente, sin cobertura o modelo que no supera su referencia.
+- ⭐ **Mejor del partido:** como máximo una verde; no significa certeza ni invita a combinar.
 
-## Corrección crítica frente a V10.2
+## Vigilante Gatuno de 7 días
 
-V10.2 reconstruía colores usando solamente la probabilidad seleccionada. Eso podía convertir en verde un modelo que su propia validación marcaba como `NO SUPERA BASE OOS`. V10.3 conserva el semáforo del motor; la auditoría solo puede degradarlo y nunca promocionarlo.
+El programa analiza por separado resultado, goles 1T, córners 1T, tarjetas, gol local y gol visitante. Una alerta requiere:
 
-## Auditoría y aprendizaje
+- al menos 20 verdes resueltos;
+- actividad en al menos 4 días de la ventana;
+- deterioro confirmado por más de una señal: brecha frente a la probabilidad prometida, Brier, repetición diaria o caída frente a los 28 días anteriores.
 
-- Congela la primera predicción emitida antes del inicio y nunca la sobrescribe.
-- Cierra automáticamente resultados 1X2, goles, goles 1T, córners 1T y tarjetas cuando la fuente ofrece el dato verificable.
-- Marca estadísticas ausentes como `NO_EVALUABLE`; no las cuenta como fallo ni acierto.
-- Aprende de forma conservadora por mercado: con 60 resultados verdes puede degradar señales futuras si el rendimiento se deteriora.
-- No publica una tasa ficticia de 0% cuando todavía no existen resultados cerrados.
-- La etiqueta de consistencia exige 300 verdes resueltos, 30 días, al menos cuatro mercados con soporte y límite inferior Wilson de 95%. No equivale a rentabilidad sin cuotas reales.
+Cuando la evidencia es suficiente aparecen dos botones:
 
-## Fútbol argentino e interligas CONMEBOL
+- **🐾 Aplicar ajuste seguro:** endurece temporalmente el verde o pausa verdes durante 7 días si la caída es crítica.
+- **🔎 Observar 7 días:** no cambia nada y vuelve a revisar una semana después.
 
-La hipótesis de mayor interrupción, tarjetas o menor producción de córners no se introduce como penalización fija. El origen del club, cruce de país, forma de tarjetas/córners, localía y competición son variables del modelo. Para córners 1T y tarjetas en cruces argentinos interliga, la señal queda bloqueada si el subgrupo no tiene al menos 30 antecedentes y no supera temporalmente su referencia.
+El ajuste queda registrado, tiene vencimiento y puede revertirse. Nunca promociona amarillo/rojo a verde y nunca modifica partidos iniciados.
+
+## Qué aprende y qué no
+
+El motor estadístico se reentrena con resultados reales completos. El Vigilante no reentrena con el simple bit “acertado/fallado”; usa ese resultado para controlar el semáforo y detectar mala calibración. Esto evita que una racha corta haga que el sistema persiga sus propios errores.
+
+Una semana sirve como alarma temprana, no como certificación. La etiqueta de consistencia sigue exigiendo 300 verdes resueltos, 30 días, cuatro mercados con soporte y límite Wilson. Tampoco prueba rentabilidad: para ROI hacen falta cuotas reales guardadas antes del partido.
+
+## Historial y migración
+
+La primera predicción de cada evento/mercado se guarda antes del inicio. Un ajuste confirmado puede actualizar **solo el color de seguridad** mientras el partido siga pendiente. Al llegar el kickoff, la fila queda congelada.
+
+Si existe `app_data_v10/historial_apuestas.csv`, V10.4 lo migra automáticamente al historial nuevo para conservar aciertos y fallos anteriores.
 
 ## Instalación
 
@@ -44,19 +56,20 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-La primera actualización tarda porque descarga y valida históricos. Las aperturas siguientes leen la caché de inmediato; usa **Actualizar y auditar resultados** cuando quieras recalcular.
+La primera generación puede tardar porque construye la caché. Las aperturas siguientes cargan esa caché. Usa **Actualizar y auditar resultados** al cerrar la jornada.
 
 ## Archivos principales
 
-- `app.py`: interfaz y Excel simplificado.
-- `bet_forecaster_v10.py`: variables prepartido, entrenamiento, calibración y pronósticos.
-- `gatuno_audit.py`: historial inmutable, cierre de resultados y cortacircuito adaptativo.
+- `app.py`: interfaz móvil Gatuno, decisiones y Excel.
+- `bet_forecaster_v10.py`: variables, entrenamiento, calibración y pronósticos.
+- `gatuno_audit.py`: historial prospectivo y cierre de resultados.
+- `adaptive_monitor.py`: diagnóstico semanal, propuestas, políticas y reversión.
+- `model_monitor.py`: deterioro de métricas fuera de muestra por submodelo.
 - `scheduled_refresh.py`: actualización no interactiva.
-- `self_test_v10_3.py`: pruebas offline de las protecciones críticas.
-- `CRITERIOS_V10_3.md`: reglas estadísticas y decisiones de diseño.
-- `VERIFICACION_V10_3.md`: hallazgos de auditoría y límites actuales.
-- `ACTUALIZAR_A_V10_3.md`: pasos de actualización en GitHub/Streamlit.
+- `self_test_v10_4.py`: pruebas de las protecciones adaptativas.
+- `CRITERIOS_V10_4.md`: reglas estadísticas completas.
+- `ACTUALIZAR_A_V10_4.md`: actualización desde V10.3.
 
-## Advertencia honesta
+## Advertencia
 
-Este software todavía debe acumular resultados prospectivos. Una tasa de acierto no demuestra beneficio; para medir rentabilidad se necesitan cuotas reales completas, registradas antes del partido, y reglas de liquidación equivalentes. No garantiza aciertos ni ganancias.
+El programa es experimental. No garantiza aciertos ni ganancias. No persigas pérdidas y apuesta solo dinero que puedas perder.
