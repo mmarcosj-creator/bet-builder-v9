@@ -46,7 +46,7 @@ except Exception as exc:  # pragma: no cover - mensaje explicito en despliegue
     ) from exc
 
 
-VERSION = "V10.1-PREMARKET-CALIBRATED-ARG-CROSS"
+VERSION = "V10.3-GATUNO-PRO"
 APP_DATA_DIR = Path("app_data_v10")
 LINEUP_HISTORY_PATH = APP_DATA_DIR / "lineup_history.json"
 
@@ -72,6 +72,13 @@ ELO_HOME_ADVANTAGE = 55.0
 ELO_K = 22.0
 
 RESULT_LABELS = {0: "LOCAL", 1: "EMPATE", 2: "VISITANTE"}
+
+MARKET_CODES = {
+    "Resultado 1X2": "RESULT_1X2",
+    "Goles 1.er tiempo": "H1_GOALS_OU15",
+    "Corners 1.er tiempo": "H1_CORNERS_OU45",
+    "Tarjetas amarillas totales": "YELLOW_CARDS_OU45",
+}
 
 NUMERIC_FEATURES = [
     "HomeElo",
@@ -784,6 +791,70 @@ def _fit_probability_model(frame: pd.DataFrame, name: str, target: str, kind: st
     metrics["EstadoValidacion"] = (
         "SUPERA BASE OOS" if metrics["SuperaBase"] else "NO SUPERA BASE OOS"
     )
+
+    # Auditoría específica de cruces argentinos interliga. El indicador está
+    # disponible para todos los modelos, pero se usa como cortacircuito en los
+    # mercados donde la hipótesis táctica es directa (tarjetas y córners). No
+    # se aplica una bonificación o penalización fija por nacionalidad.
+    train_arg_flag = (
+        pd.to_numeric(train_eval["ArgentineCrossLeague"], errors="coerce").fillna(0)
+        if "ArgentineCrossLeague" in train_eval
+        else pd.Series(0.0, index=train_eval.index)
+    )
+    test_arg_flag = (
+        pd.to_numeric(test["ArgentineCrossLeague"], errors="coerce").fillna(0)
+        if "ArgentineCrossLeague" in test
+        else pd.Series(0.0, index=test.index)
+    )
+    train_arg = train_eval[train_arg_flag >= 0.5]
+    test_arg_mask = test_arg_flag >= 0.5
+    test_arg = test.loc[test_arg_mask]
+    arg_n = int(len(test_arg))
+    metrics.update({
+        "ArgCrossNEntrenamiento": int(len(train_arg)),
+        "ArgCrossNValidacion": arg_n,
+        "ArgCrossBrier": np.nan,
+        "ArgCrossBrierBase": np.nan,
+        "ArgCrossMejoraBrier": np.nan,
+        "ArgCrossECE": np.nan,
+        "ArgCrossSuperaBase": False,
+    })
+    if arg_n:
+        if kind == "binary":
+            arg_positions = np.flatnonzero(test_arg_mask.to_numpy())
+            arg_probabilities = np.asarray(calibrated_test)[arg_positions]
+            arg_targets = test_arg[target].astype(int).to_numpy()
+            reference_rows = train_arg if len(train_arg) >= 20 else train_eval
+            reference = float(reference_rows[target].mean())
+            arg_brier = float(np.mean((arg_probabilities - arg_targets) ** 2))
+            arg_base = float(np.mean((reference - arg_targets) ** 2))
+            arg_ece = _ece_binary(arg_targets, arg_probabilities, bins=5)
+        else:
+            arg_positions = np.flatnonzero(test_arg_mask.to_numpy())
+            arg_probabilities = np.asarray(calibrated_test)[arg_positions]
+            arg_targets = test_arg[target].astype(int).to_numpy()
+            reference_rows = train_arg if len(train_arg) >= 20 else train_eval
+            priors = (
+                reference_rows[target].value_counts(normalize=True)
+                .reindex([0, 1, 2], fill_value=0.0)
+                .to_numpy(dtype=float)
+            )
+            onehot = np.eye(3)[arg_targets]
+            arg_brier = float(np.mean(np.sum((arg_probabilities - onehot) ** 2, axis=1)))
+            arg_base = float(np.mean(np.sum((priors - onehot) ** 2, axis=1)))
+            arg_ece = _ece_multiclass(arg_targets, arg_probabilities, bins=5)
+        arg_improvement = float((arg_base - arg_brier) / max(arg_base, 1e-9))
+        metrics.update({
+            "ArgCrossBrier": arg_brier,
+            "ArgCrossBrierBase": arg_base,
+            "ArgCrossMejoraBrier": arg_improvement,
+            "ArgCrossECE": arg_ece,
+            "ArgCrossSuperaBase": bool(
+                arg_n >= MIN_ARG_CROSS_SAMPLE
+                and arg_improvement > 0.0
+                and arg_ece <= 0.16
+            ),
+        })
     metrics["CalidadModelo"] = _quality_score(metrics)
 
     final_model = _fit_pipeline(_new_classifier(), usable, target)
@@ -999,6 +1070,71 @@ def _semaphore_result(
     return "ROJO", "MUY RIESGOSA"
 
 
+def _validated_signal(
+    semaphore: str,
+    level: str,
+    passes_oos: bool,
+) -> tuple[str, str]:
+    """Impide que un modelo que no supera su referencia publique una señal.
+
+    La interfaz nunca debe reconstruir el color usando solo la probabilidad.
+    Esta compuerta es deliberadamente unidireccional: puede degradar una señal,
+    pero jamás promocionarla.
+    """
+    if not bool(passes_oos):
+        return "ROJO", "NO SUPERA BASE OOS"
+    return str(semaphore), str(level)
+
+
+def _market_code(market: str, fixture: pd.Series) -> str:
+    if market in MARKET_CODES:
+        return MARKET_CODES[market]
+    home = str(fixture.get("HomeOriginal", fixture.get("HomeTeam", "")))
+    away = str(fixture.get("AwayOriginal", fixture.get("AwayTeam", "")))
+    if market == f"Goles {home}":
+        return "HOME_SCORE_OU05"
+    if market == f"Goles {away}":
+        return "AWAY_SCORE_OU05"
+    return "UNKNOWN"
+
+
+def _prediction_code(market_code: str, prediction: str) -> str:
+    value = str(prediction).strip().upper()
+    if value in {"", "SIN PRONOSTICO", "NAN"}:
+        return "ABSTAIN"
+    if market_code == "RESULT_1X2":
+        return {"LOCAL": "HOME", "EMPATE": "DRAW", "VISITANTE": "AWAY"}.get(value, "ABSTAIN")
+    if market_code in {"H1_GOALS_OU15", "H1_CORNERS_OU45", "YELLOW_CARDS_OU45"}:
+        return "OVER" if value.startswith("MAS") else "UNDER" if value.startswith("MENOS") else "ABSTAIN"
+    if market_code in {"HOME_SCORE_OU05", "AWAY_SCORE_OU05"}:
+        return "YES" if value.startswith("MARCA") else "NO" if value.startswith("NO MARCA") else "ABSTAIN"
+    return "ABSTAIN"
+
+
+def _mark_best_option(rows: list[dict[str, Any]]) -> None:
+    """Marca como máximo una opción verde por partido, sin crear combinadas."""
+    candidates: list[tuple[float, int]] = []
+    for index, row in enumerate(rows):
+        probability = float(row.get("Probabilidad", np.nan))
+        conservative = float(row.get("PConservadora", np.nan))
+        reliability = float(row.get("Fiabilidad", np.nan))
+        support = float(row.get("Soporte", 0) or 0)
+        if (
+            str(row.get("Semaforo", "")) == "VERDE"
+            and str(row.get("PronosticoCodigo", "")) != "ABSTAIN"
+            and np.isfinite(probability)
+            and np.isfinite(conservative)
+            and np.isfinite(reliability)
+        ):
+            score = 0.45 * conservative + 0.35 * reliability + 0.20 * min(1.0, support / 100.0)
+            row["PuntajeSeleccion"] = float(score)
+            candidates.append((score, index))
+        else:
+            row["PuntajeSeleccion"] = np.nan
+    if candidates:
+        rows[max(candidates)[1]]["MejorOpcion"] = True
+
+
 def _market_row(
     fixture: pd.Series,
     market: str,
@@ -1014,25 +1150,34 @@ def _market_row(
     reason: str,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    market_code = _market_code(market, fixture)
     row = {
         "Fecha": fixture.get("Date"),
         "KickoffUTC": fixture.get("KickoffUTC", ""),
+        "EventID": str(fixture.get("EventID", "")),
+        "HomeESPNID": str(fixture.get("HomeESPNID", "")),
+        "AwayESPNID": str(fixture.get("AwayESPNID", "")),
         "HoraPeru": fixture.get("HoraPeru", ""),
         "CompKey": fixture.get("CompKey", ""),
         "Competicion": fixture.get("Competicion", fixture.get("CompKey", "")),
         "Local": fixture.get("HomeOriginal", fixture.get("HomeTeam", "")),
         "Visitante": fixture.get("AwayOriginal", fixture.get("AwayTeam", "")),
         "Mercado": market,
+        "MercadoCodigo": market_code,
         "Linea": line,
         "Pronostico": prediction,
+        "PronosticoCodigo": _prediction_code(market_code, prediction),
         "Probabilidad": p_selected,
         "ProbAlternativa": p_alternative,
         "PConservadora": lcb,
         "Fiabilidad": reliability,
         "Soporte": support,
         "Semaforo": semaphore,
+        "SemaforoModelo": semaphore,
+        "SemaforoFinal": semaphore,
         "Nivel": level,
         "Motivo": reason,
+        "MejorOpcion": False,
         "Version": VERSION,
     }
     if extra:
@@ -1195,6 +1340,60 @@ def _h1_corner_oos_validation(sample: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _argentine_corner_oos_validation(
+    all_international: pd.DataFrame,
+    argentine_crosses: pd.DataFrame,
+) -> dict[str, Any]:
+    """Valida temporalmente si el subgrupo argentino aporta frente a la base.
+
+    Compara una tasa del subgrupo encogida con la tasa general disponible antes
+    del corte. Así, una diferencia descriptiva no se convierte automáticamente
+    en regla de apuesta.
+    """
+    group = argentine_crosses.sort_values("Date").copy()
+    if len(group) < MIN_ARG_CROSS_SAMPLE:
+        return {
+            "n": int(len(group)), "n_valid": 0, "improvement": np.nan,
+            "brier": np.nan, "brier_base": np.nan, "ece": np.nan,
+            "passes": False, "note": "muestra argentina insuficiente",
+        }
+    dates = np.array(sorted(group["Date"].dropna().unique()))
+    if len(dates) < 10:
+        return {
+            "n": int(len(group)), "n_valid": 0, "improvement": np.nan,
+            "brier": np.nan, "brier_base": np.nan, "ece": np.nan,
+            "passes": False, "note": "pocas fechas independientes",
+        }
+    cutoff = pd.Timestamp(dates[max(1, int(len(dates) * 0.72))])
+    train_all = all_international[all_international["Date"] < cutoff]
+    train_group = group[group["Date"] < cutoff]
+    valid = group[group["Date"] >= cutoff]
+    if len(train_all) < 40 or len(train_group) < 20 or len(valid) < 8:
+        return {
+            "n": int(len(group)), "n_valid": int(len(valid)), "improvement": np.nan,
+            "brier": np.nan, "brier_base": np.nan, "ece": np.nan,
+            "passes": False, "note": "corte temporal argentino insuficiente",
+        }
+    base_rate = float((train_all["H1CornersTotal"].ge(5).sum() + 0.5 * 24.0) / (len(train_all) + 24.0))
+    group_rate = float((train_group["H1CornersTotal"].ge(5).sum() + base_rate * 24.0) / (len(train_group) + 24.0))
+    y = valid["H1CornersTotal"].ge(5).astype(float).to_numpy()
+    brier = float(np.mean((group_rate - y) ** 2))
+    brier_base = float(np.mean((base_rate - y) ** 2))
+    improvement = float((brier_base - brier) / max(brier_base, 1e-9))
+    ece = float(abs(group_rate - y.mean()))
+    passes = bool(improvement > 0.0 and ece <= 0.18)
+    return {
+        "n": int(len(group)),
+        "n_valid": int(len(valid)),
+        "improvement": improvement,
+        "brier": brier,
+        "brier_base": brier_base,
+        "ece": ece,
+        "passes": passes,
+        "note": "SUPERA BASE OOS" if passes else "NO SUPERA BASE OOS",
+    }
+
+
 def predict_h1_corners(
     context: pd.DataFrame,
     fixture: pd.Series,
@@ -1256,6 +1455,11 @@ def predict_h1_corners(
     arg_cross_n = 0
     arg_cross_rate = np.nan
     arg_corner_delta = np.nan
+    arg_validation = {
+        "n": 0, "n_valid": 0, "improvement": np.nan, "brier": np.nan,
+        "brier_base": np.nan, "ece": np.nan, "passes": False,
+        "note": "no aplica",
+    }
     adjustment_note = ""
     if current_flags["ArgentineCrossLeague"] == 1.0:
         origins_by_normalized = {
@@ -1288,6 +1492,8 @@ def predict_h1_corners(
             )
         arg_sample = data.loc[np.asarray(cross_mask, dtype=bool)]
         arg_cross_n = int(len(arg_sample))
+        international = data[data["CompKey"].astype(str).isin(SOUTH_AMERICAN_INTERNATIONAL)]
+        arg_validation = _argentine_corner_oos_validation(international, arg_sample)
         if arg_cross_n >= MIN_ARG_CROSS_SAMPLE:
             raw_rate = float((arg_sample["H1CornersTotal"] >= 5).mean())
             arg_cross_rate = float(
@@ -1297,12 +1503,18 @@ def predict_h1_corners(
             arg_mean = float(arg_sample["H1CornersTotal"].mean())
             base_mean = float(sample["H1CornersTotal"].mean())
             arg_corner_delta = arg_mean - base_mean
-            weight = min(0.45, arg_cross_n / (arg_cross_n + 55.0))
-            p_over = float((1.0 - weight) * p_over + weight * arg_cross_rate)
-            adjustment_note = (
-                f"; cruce argentino interliga activado n={arg_cross_n}, "
-                f"delta corners 1T={arg_corner_delta:+.2f}, tasa O4.5={raw_rate:.1%}"
-            )
+            if arg_validation["passes"]:
+                weight = min(0.45, arg_cross_n / (arg_cross_n + 55.0))
+                p_over = float((1.0 - weight) * p_over + weight * arg_cross_rate)
+                adjustment_note = (
+                    f"; cruce argentino interliga validado n={arg_cross_n}, "
+                    f"delta corners 1T={arg_corner_delta:+.2f}, tasa O4.5={raw_rate:.1%}"
+                )
+            else:
+                adjustment_note = (
+                    f"; diferencia argentina observada pero bloqueada: "
+                    f"{arg_validation['note']} (validacion n={arg_validation['n_valid']})"
+                )
         else:
             adjustment_note = (
                 f"; cruce argentino detectado pero sin ajuste: "
@@ -1312,8 +1524,15 @@ def predict_h1_corners(
     reliability = float(np.clip(0.34 + 0.45 * min(1.0, len(sample) / 120.0) + 0.21 * min(1.0, min(team_ns or [0]) / 10.0), 0.25, 0.88))
     if not validation["passes"]:
         reliability = min(reliability, 0.42)
-    if current_flags["ArgentineCrossLeague"] == 1.0 and arg_cross_n < MIN_ARG_CROSS_SAMPLE:
+    if current_flags["ArgentineCrossLeague"] == 1.0 and not arg_validation["passes"]:
         reliability *= 0.78
+    effective_oos = bool(
+        validation["passes"]
+        and (
+            current_flags["ArgentineCrossLeague"] != 1.0
+            or arg_validation["passes"]
+        )
+    )
     return {
         "available": True,
         "p_over": _clip_probability(p_over),
@@ -1327,10 +1546,14 @@ def predict_h1_corners(
         "oos_brier_base": validation["brier_base"],
         "oos_improvement": validation["improvement"],
         "oos_ece": validation["ece"],
-        "oos_passes": validation["passes"],
+        "oos_passes": effective_oos,
         "arg_cross_n": arg_cross_n,
         "arg_cross_rate": arg_cross_rate,
         "arg_corner_delta": arg_corner_delta,
+        "arg_oos_n": arg_validation["n_valid"],
+        "arg_oos_improvement": arg_validation["improvement"],
+        "arg_oos_ece": arg_validation["ece"],
+        "arg_oos_passes": arg_validation["passes"],
     }
 
 
@@ -1360,6 +1583,9 @@ def forecast_fixture(
     support, reliability = _support_and_reliability(feature, result_model.metrics["CalidadModelo"], context_factor)
     lcb = _wilson_lower(p_choice, support)
     semaphore, level = _semaphore_result(p_choice, margin, lcb, reliability, support)
+    semaphore, level = _validated_signal(
+        semaphore, level, result_model.metrics.get("SuperaBase", False)
+    )
     rows.append(_market_row(
         fixture, "Resultado 1X2", "Local / Empate / Visitante", RESULT_LABELS[choice],
         p_choice, float(result_probs[runner_up]), lcb, reliability, support,
@@ -1372,6 +1598,8 @@ def forecast_fixture(
             "P_Local": float(result_probs[0]),
             "P_Empate": float(result_probs[1]),
             "P_Visitante": float(result_probs[2]),
+            "ModeloSuperaBase": bool(result_model.metrics.get("SuperaBase", False)),
+            "ModeloEstadoValidacion": result_model.metrics.get("EstadoValidacion", ""),
         },
     ))
 
@@ -1385,6 +1613,16 @@ def forecast_fixture(
         support_b, rel_b = _support_and_reliability(feature, model.metrics["CalidadModelo"], context_factor)
         lcb_b = _wilson_lower(selected, support_b)
         sem, lev = _semaphore_binary(selected, lcb_b, rel_b, support_b)
+        passes_oos = bool(model.metrics.get("SuperaBase", False))
+        arg_subgroup_note = ""
+        if feature.get("ArgentineCrossLeague", 0.0) == 1.0 and model_key == "TARJETAS_O45":
+            arg_passes = bool(model.metrics.get("ArgCrossSuperaBase", False))
+            passes_oos = passes_oos and arg_passes
+            arg_subgroup_note = (
+                f"; validacion cruce argentino n={int(model.metrics.get('ArgCrossNValidacion', 0) or 0)}: "
+                + ("SUPERA BASE" if arg_passes else "NO SUPERA BASE/SIN MUESTRA")
+            )
+        sem, lev = _validated_signal(sem, lev, passes_oos)
         rows.append(_market_row(
             fixture, market, line, prediction, selected, alternative, lcb_b,
             rel_b, support_b, sem, lev,
@@ -1397,8 +1635,17 @@ def forecast_fixture(
                     if feature.get("ArgentineCrossLeague", 0.0) == 1.0
                     else ""
                 )
+                + arg_subgroup_note
             ),
-            {"P_OpcionPositiva": p_positive},
+            {
+                "P_OpcionPositiva": p_positive,
+                "ModeloSuperaBase": passes_oos,
+                "ModeloEstadoValidacion": (
+                    "SUPERA BASE OOS" if passes_oos else "NO SUPERA BASE OOS"
+                ),
+                "ArgCrossNValidacion": model.metrics.get("ArgCrossNValidacion", 0),
+                "ArgCrossSuperaBase": model.metrics.get("ArgCrossSuperaBase", False),
+            },
         ))
 
     add_binary("GOLES_1T_U15", "Goles 1.er tiempo", "1.5", "MENOS DE 1.5", "MAS DE 1.5")
@@ -1414,6 +1661,7 @@ def forecast_fixture(
         corner_support = int(corner["support"])
         corner_lcb = _wilson_lower(selected, corner_support)
         sem, lev = _semaphore_binary(selected, corner_lcb, corner_rel, corner_support)
+        sem, lev = _validated_signal(sem, lev, corner.get("oos_passes", False))
         rows.append(_market_row(
             fixture, "Corners 1.er tiempo", "4.5", prediction, selected, alternative,
             corner_lcb, corner_rel, corner_support, sem, lev, str(corner["reason"]),
@@ -1422,22 +1670,38 @@ def forecast_fixture(
                 "ArgCrossN": corner.get("arg_cross_n", 0),
                 "ArgCrossRateO45": corner.get("arg_cross_rate", np.nan),
                 "ArgCornerDelta1T": corner.get("arg_corner_delta", np.nan),
+                "ArgCornerNValidacion": corner.get("arg_oos_n", 0),
+                "ArgCornerMejoraOOS": corner.get("arg_oos_improvement", np.nan),
+                "ArgCornerECE": corner.get("arg_oos_ece", np.nan),
+                "ArgCornerSuperaBase": corner.get("arg_oos_passes", False),
                 "CornerBrierOOS": corner.get("oos_brier", np.nan),
                 "CornerBrierBase": corner.get("oos_brier_base", np.nan),
                 "CornerMejoraBrier": corner.get("oos_improvement", np.nan),
                 "CornerECE": corner.get("oos_ece", np.nan),
                 "CornerSuperaBase": corner.get("oos_passes", False),
+                "ModeloSuperaBase": bool(corner.get("oos_passes", False)),
+                "ModeloEstadoValidacion": (
+                    "SUPERA BASE OOS" if corner.get("oos_passes", False) else "NO SUPERA BASE OOS"
+                ),
             },
         ))
     else:
         rows.append(_market_row(
             fixture, "Corners 1.er tiempo", "4.5", "SIN PRONOSTICO", np.nan, np.nan,
             np.nan, 0.0, 0, "ROJO", "NO MODELABLE", str(corner.get("reason", "Sin datos")),
+            {"ModeloSuperaBase": False, "ModeloEstadoValidacion": "SIN COBERTURA"},
         ))
 
     add_binary("TARJETAS_O45", "Tarjetas amarillas totales", "4.5", "MAS DE 4.5", "MENOS DE 4.5")
     add_binary("LOCAL_MARCA", f"Goles {fixture.get('HomeOriginal', 'local')}", "0.5", "MARCA 1+", "NO MARCA")
     add_binary("VISITANTE_MARCA", f"Goles {fixture.get('AwayOriginal', 'visitante')}", "0.5", "MARCA 1+", "NO MARCA")
+
+    for row in rows:
+        row["EstadoAlineacion"] = context.get("lineup_status", "NO_DISPONIBLE")
+        row["RiesgoRotacion"] = context.get("rotation_risk", "")
+        row["FactorContexto"] = context_factor
+
+    _mark_best_option(rows)
 
     expected_home = float(np.clip(bundle.count_models["GOLES_ESPERADOS_LOCAL"].model.predict(feature_frame[MODEL_FEATURES])[0], 0.05, 5.0))
     expected_away = float(np.clip(bundle.count_models["GOLES_ESPERADOS_VISITANTE"].model.predict(feature_frame[MODEL_FEATURES])[0], 0.05, 5.0))
@@ -1447,6 +1711,9 @@ def forecast_fixture(
     match_summary = {
         "Fecha": fixture.get("Date"),
         "KickoffUTC": fixture.get("KickoffUTC", ""),
+        "EventID": str(fixture.get("EventID", "")),
+        "HomeESPNID": str(fixture.get("HomeESPNID", "")),
+        "AwayESPNID": str(fixture.get("AwayESPNID", "")),
         "HoraPeru": fixture.get("HoraPeru", ""),
         "CompKey": fixture.get("CompKey", ""),
         "Competicion": fixture.get("Competicion", fixture.get("CompKey", "")),
