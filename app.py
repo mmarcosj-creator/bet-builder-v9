@@ -1,4 +1,4 @@
-"""Interfaz Streamlit para FORECASTER FUTBOL V10.2 GATUNO (Con Módulo de Auditoría)."""
+"""Interfaz Streamlit para FORECASTER FUTBOL V10.2 GATUNO (Con Autoevaluación Activa)."""
 
 from __future__ import annotations
 
@@ -96,11 +96,9 @@ def apply_gatuno_criteria(markets_df):
     return df
 
 def update_audit_history(markets_df, matches_df):
-    """Registra y acumula las predicciones en un historial persistente para auditoría autónoma."""
     if markets_df is None or markets_df.empty or matches_df is None or matches_df.empty:
         return
     
-    # Creamos un registro plano combinando partido y mercado
     records = []
     for _, row in markets_df.iterrows():
         records.append({
@@ -112,7 +110,7 @@ def update_audit_history(markets_df, matches_df):
             "Pronostico": str(row.get("Pronostico", "")),
             "Probabilidad": safe_float(row.get("Probabilidad", 0)),
             "Semaforo": str(row.get("Semaforo", "ROJO")),
-            "EstadoResultado": "PENDIENTE", # Se actualizará en siguientes versiones
+            "EstadoResultado": "PENDIENTE", 
             "ActualizadoEn": datetime.now(base.TZ_PERU).strftime("%Y-%m-%d %H:%M")
         })
     
@@ -120,7 +118,6 @@ def update_audit_history(markets_df, matches_df):
     if HISTORY_FILE.exists():
         try:
             old_hist = pd.read_csv(HISTORY_FILE)
-            # Combinar evitando duplicados exactos por partido/mercado/fecha
             combined = pd.concat([old_hist, new_hist]).drop_duplicates(
                 subset=["Fecha", "Local", "Visitante", "Mercado"], keep="last"
             )
@@ -164,10 +161,7 @@ def run_and_save():
     matches = filter_not_started(matches)
     markets = filter_not_started(markets)
     markets = apply_gatuno_criteria(markets)
-    
-    # Alimentamos el historial de auditoría autónoma
     update_audit_history(markets, matches)
-    
     matches.to_csv(MATCH_FILE, index=False, encoding="utf-8-sig")
     markets.to_csv(MARKET_FILE, index=False, encoding="utf-8-sig")
     metrics.to_csv(METRIC_FILE, index=False, encoding="utf-8-sig")
@@ -232,7 +226,7 @@ st.markdown(
     f"""
     <div class="hero">
       <h1>🐾 Forecaster Fútbol V10.2 Gatuno PRO</h1>
-      <p>Sistema autónomo con umbrales dinámicos y registro de auditoría.</p>
+      <p>Sistema autónomo con auditoría, controles de acierto y umbrales dinámicos.</p>
       <span class="pill green">🟢 🤩 ALTA EVIDENCIA (>60%)</span>
       <span class="pill amber">🟡 🧐 PRECAUCIÓN (50-60%)</span>
       <span class="pill red">🔴 🙀 RIESGOSO (&lt;50%)</span>
@@ -246,22 +240,31 @@ try:
     if cache_current(meta):
         matches, markets, metrics = load_data()
     else:
-        with st.status("🐾 Afilando garras y registrando auditoría…", expanded=True):
+        with st.status("🐾 Afilando garras y auditando registros…", expanded=True):
             matches, markets, metrics, meta = run_and_save()
-        st.toast("✅ ¡Cacería y auditoría actualizadas!", icon="🐾")
+        st.toast("✅ ¡Cacería y auditoría listas!", icon="🐾")
 except Exception as exc:
     st.error("Error al ejecutar V10.2.")
     st.code(str(exc))
     st.stop()
 
-# Panel informativo de auditoría en curso
+# Panel visual del Módulo de Auditoría y Tasa de Éxito
 if HISTORY_FILE.exists():
     try:
         hist_df = pd.read_csv(HISTORY_FILE)
         total_audit = len(hist_df)
+        pendientes = len(hist_df[hist_df["EstadoResultado"] == "PENDIENTE"])
+        aciertos = len(hist_df[hist_df["EstadoResultado"] == "ACERTADO"])
+        fallos = len(hist_df[hist_df["EstadoResultado"] == "FALLADO"])
+        evaluados = aciertos + fallos
+        tasa_exito = (aciertos / evaluados * 100) if evaluados > 0 else 0.0
+
         st.markdown(f"""
         <div class="audit-box">
-          <b>📚 Módulo de Auditoría Activo:</b> Se están registrando autónomamente <b>{total_audit}</b> pronósticos en el historial persistente para la posterior validación de aciertos.
+          <b>📊 Panel de Autoevaluación Histórica:</b> Registros totales: <b>{total_audit}</b> | 
+          Pendientes de resultado: <b>{pendientes}</b> | 
+          Evaluados: <b>{evaluados}</b> | 
+          Tasa de Éxito Real: <b>{tasa_exito:.1f}%</b> {("✔️" if tasa_exito >= 60 else "⚠️")}
         </div>
         """, unsafe_allow_html=True)
     except Exception:
