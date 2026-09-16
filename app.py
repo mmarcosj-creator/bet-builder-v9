@@ -1,4 +1,4 @@
-"""Interfaz Streamlit para FORECASTER FUTBOL V10 GATUNO."""
+"""Interfaz Streamlit para FORECASTER FUTBOL V10.2 GATUNO (Con Módulo de Auditoría)."""
 
 from __future__ import annotations
 
@@ -15,17 +15,18 @@ import streamlit as st
 import bet_builder_v8_1_robust as base
 import bet_forecaster_v10 as v10
 
-APP_VERSION = "V10 Gatuno"
+APP_VERSION = "V10.2 Gatuno Pro"
 DATA_DIR = Path("app_data_v10")
 DATA_DIR.mkdir(exist_ok=True)
 MATCH_FILE = DATA_DIR / "latest_matches.csv"
 MARKET_FILE = DATA_DIR / "latest_markets.csv"
 METRIC_FILE = DATA_DIR / "latest_validation.csv"
+HISTORY_FILE = DATA_DIR / "historial_apuestas.csv"
 META_FILE = DATA_DIR / "meta.json"
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Forecaster Fútbol V10 Gatuno",
+    page_title="Forecaster Fútbol V10.2 Gatuno",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -59,8 +60,8 @@ st.markdown(
       .market-name {font-weight:780;}
       .pick {font-weight:900;}
       .status-emoji {font-size:1.35rem;}
-      .info-box {padding:.75rem .85rem; border-radius:14px; background:rgba(59,130,246,.08);
-                 border:1px solid rgba(59,130,246,.18); margin:.65rem 0;}
+      .audit-box {padding:.75rem .85rem; border-radius:14px; background:rgba(34,197,94,.08);
+                  border:1px solid rgba(34,197,94,.18); margin:.65rem 0;}
       .stButton button,.stDownloadButton button {min-height:45px; border-radius:13px; font-weight:800;}
       @media(max-width:700px){
         .market-row {grid-template-columns:1fr auto auto;}
@@ -78,14 +79,12 @@ def safe_float(value, default=np.nan):
         return default
 
 def apply_gatuno_criteria(markets_df):
-    """Aplica los umbrales dinámicos antes de mostrar los datos en pantalla o guardarlos."""
     if markets_df is None or markets_df.empty:
         return markets_df
     df = markets_df.copy()
     for idx, row in df.iterrows():
         prob = safe_float(row.get('Probabilidad', 0))
         pronostico = str(row.get('Pronostico', '')).strip().upper()
-        # Si no hay datos, es nulo, o dice SIN PRONOSTICO
         if pd.isna(prob) or pronostico in ["", "SIN PRONOSTICO", "NAN"]:
             df.at[idx, 'Semaforo'] = "ROJO"
         elif prob >= 0.60:
@@ -95,6 +94,41 @@ def apply_gatuno_criteria(markets_df):
         else:
             df.at[idx, 'Semaforo'] = "ROJO"
     return df
+
+def update_audit_history(markets_df, matches_df):
+    """Registra y acumula las predicciones en un historial persistente para auditoría autónoma."""
+    if markets_df is None or markets_df.empty or matches_df is None or matches_df.empty:
+        return
+    
+    # Creamos un registro plano combinando partido y mercado
+    records = []
+    for _, row in markets_df.iterrows():
+        records.append({
+            "Fecha": str(row.get("Fecha", "")),
+            "Competicion": str(row.get("Competicion", "")),
+            "Local": str(row.get("Local", "")),
+            "Visitante": str(row.get("Visitante", "")),
+            "Mercado": str(row.get("Mercado", "")),
+            "Pronostico": str(row.get("Pronostico", "")),
+            "Probabilidad": safe_float(row.get("Probabilidad", 0)),
+            "Semaforo": str(row.get("Semaforo", "ROJO")),
+            "EstadoResultado": "PENDIENTE", # Se actualizará en siguientes versiones
+            "ActualizadoEn": datetime.now(base.TZ_PERU).strftime("%Y-%m-%d %H:%M")
+        })
+    
+    new_hist = pd.DataFrame(records)
+    if HISTORY_FILE.exists():
+        try:
+            old_hist = pd.read_csv(HISTORY_FILE)
+            # Combinar evitando duplicados exactos por partido/mercado/fecha
+            combined = pd.concat([old_hist, new_hist]).drop_duplicates(
+                subset=["Fecha", "Local", "Visitante", "Mercado"], keep="last"
+            )
+            combined.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+        except Exception:
+            new_hist.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+    else:
+        new_hist.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
 
 def load_meta():
     if not META_FILE.exists():
@@ -129,9 +163,10 @@ def run_and_save():
     matches, markets, metrics, start, end = v10.run_v10()
     matches = filter_not_started(matches)
     markets = filter_not_started(markets)
-    
-    # Interceptamos y aplicamos la nueva lógica Gatuna antes de guardar
     markets = apply_gatuno_criteria(markets)
+    
+    # Alimentamos el historial de auditoría autónoma
+    update_audit_history(markets, matches)
     
     matches.to_csv(MATCH_FILE, index=False, encoding="utf-8-sig")
     markets.to_csv(MARKET_FILE, index=False, encoding="utf-8-sig")
@@ -188,14 +223,16 @@ def excel_bytes(matches, markets, metrics):
         summary.to_excel(writer, sheet_name="PRONOSTICOS", index=False)
         markets.to_excel(writer, sheet_name="MERCADOS_DETALLE", index=False)
         metrics.to_excel(writer, sheet_name="VALIDACION_TEMPORAL", index=False)
+        if HISTORY_FILE.exists():
+            pd.read_csv(HISTORY_FILE).to_excel(writer, sheet_name="AUDITORIA_HISTORICA", index=False)
     out.seek(0)
     return out.getvalue()
 
 st.markdown(
     f"""
     <div class="hero">
-      <h1>🐾 Forecaster Fútbol V10 Gatuno</h1>
-      <p>Decisiones ágiles, sin miedo al éxito. Evaluando probabilidades reales.</p>
+      <h1>🐾 Forecaster Fútbol V10.2 Gatuno PRO</h1>
+      <p>Sistema autónomo con umbrales dinámicos y registro de auditoría.</p>
       <span class="pill green">🟢 🤩 ALTA EVIDENCIA (>60%)</span>
       <span class="pill amber">🟡 🧐 PRECAUCIÓN (50-60%)</span>
       <span class="pill red">🔴 🙀 RIESGOSO (&lt;50%)</span>
@@ -209,30 +246,43 @@ try:
     if cache_current(meta):
         matches, markets, metrics = load_data()
     else:
-        with st.status("🐾 Afilando garras y preparando análisis…", expanded=True):
+        with st.status("🐾 Afilando garras y registrando auditoría…", expanded=True):
             matches, markets, metrics, meta = run_and_save()
-        st.toast("✅ ¡Cacería terminada! Pronósticos actualizados.", icon="🐾")
+        st.toast("✅ ¡Cacería y auditoría actualizadas!", icon="🐾")
 except Exception as exc:
-    st.error("Error al ejecutar V10 Gatuno.")
+    st.error("Error al ejecutar V10.2.")
     st.code(str(exc))
     st.stop()
 
+# Panel informativo de auditoría en curso
+if HISTORY_FILE.exists():
+    try:
+        hist_df = pd.read_csv(HISTORY_FILE)
+        total_audit = len(hist_df)
+        st.markdown(f"""
+        <div class="audit-box">
+          <b>📚 Módulo de Auditoría Activo:</b> Se están registrando autónomamente <b>{total_audit}</b> pronósticos en el historial persistente para la posterior validación de aciertos.
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception:
+        pass
+
 c1, c2 = st.columns(2)
 with c1:
-    if st.button("🔄 Forzar recálculo completo", use_container_width=True):
+    if st.button("🔄 Forzar recálculo y auditoría", use_container_width=True):
         try:
-            with st.status("🐾 Recalibrando instintos y motores…", expanded=True):
+            with st.status("🐾 Recalibrando y guardando historial…", expanded=True):
                 matches, markets, metrics, meta = run_and_save()
-            st.toast("✅ ¡Cacería terminada! Pronósticos actualizados.", icon="🐾")
+            st.toast("✅ ¡Historial y pronósticos actualizados!", icon="🐾")
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
 with c2:
     if not matches.empty:
         st.download_button(
-            "📊 Descargar Datos (Excel)",
+            "📊 Descargar Datos e Historial (Excel)",
             data=excel_bytes(matches, markets, metrics),
-            file_name="V10_GATUNO_TECNICO.xlsx",
+            file_name="V10_GATUNO_AUDITORIA.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
@@ -274,8 +324,6 @@ for _, match in visible_matches.iterrows():
     )
     for _, row in subset.iterrows():
         color_class = str(row.get("Semaforo", "ROJO")).lower()
-        
-        # Asignación de emojis según el sentimiento del color
         if color_class == "verde":
             emoji = "🟢 🤩"
         elif color_class == "amarillo":
