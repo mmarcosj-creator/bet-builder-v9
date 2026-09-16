@@ -1,4 +1,4 @@
-"""Interfaz Streamlit para FORECASTER FUTBOL V10.2 GATUNO (Con Autoevaluación Activa)."""
+"""Interfaz Streamlit para FORECASTER FUTBOL V10.2.1 GATUNO (Estable y Blindado)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import streamlit as st
 import bet_builder_v8_1_robust as base
 import bet_forecaster_v10 as v10
 
-APP_VERSION = "V10.2 Gatuno Pro"
+APP_VERSION = "V10.2.1 Gatuno Pro"
 DATA_DIR = Path("app_data_v10")
 DATA_DIR.mkdir(exist_ok=True)
 MATCH_FILE = DATA_DIR / "latest_matches.csv"
@@ -26,7 +26,7 @@ META_FILE = DATA_DIR / "meta.json"
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Forecaster Fútbol V10.2 Gatuno",
+    page_title="Forecaster Fútbol V10.2.1 Gatuno",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -78,6 +78,14 @@ def safe_float(value, default=np.nan):
     except Exception:
         return default
 
+def pct(value):
+    value = safe_float(value)
+    return "—" if pd.isna(value) else f"{value * 100:.1f}%"
+
+def number(value, digits=2):
+    value = safe_float(value)
+    return "—" if pd.isna(value) else f"{value:.{digits}f}"
+
 def apply_gatuno_criteria(markets_df):
     if markets_df is None or markets_df.empty:
         return markets_df
@@ -96,36 +104,34 @@ def apply_gatuno_criteria(markets_df):
     return df
 
 def update_audit_history(markets_df, matches_df):
-    if markets_df is None or markets_df.empty or matches_df is None or matches_df.empty:
-        return
-    
-    records = []
-    for _, row in markets_df.iterrows():
-        records.append({
-            "Fecha": str(row.get("Fecha", "")),
-            "Competicion": str(row.get("Competicion", "")),
-            "Local": str(row.get("Local", "")),
-            "Visitante": str(row.get("Visitante", "")),
-            "Mercado": str(row.get("Mercado", "")),
-            "Pronostico": str(row.get("Pronostico", "")),
-            "Probabilidad": safe_float(row.get("Probabilidad", 0)),
-            "Semaforo": str(row.get("Semaforo", "ROJO")),
-            "EstadoResultado": "PENDIENTE", 
-            "ActualizadoEn": datetime.now(base.TZ_PERU).strftime("%Y-%m-%d %H:%M")
-        })
-    
-    new_hist = pd.DataFrame(records)
-    if HISTORY_FILE.exists():
-        try:
+    try:
+        if markets_df is None or markets_df.empty or matches_df is None or matches_df.empty:
+            return
+        records = []
+        for _, row in markets_df.iterrows():
+            records.append({
+                "Fecha": str(row.get("Fecha", "")),
+                "Competicion": str(row.get("Competicion", "")),
+                "Local": str(row.get("Local", "")),
+                "Visitante": str(row.get("Visitante", "")),
+                "Mercado": str(row.get("Mercado", "")),
+                "Pronostico": str(row.get("Pronostico", "")),
+                "Probabilidad": safe_float(row.get("Probabilidad", 0)),
+                "Semaforo": str(row.get("Semaforo", "ROJO")),
+                "EstadoResultado": "PENDIENTE", 
+                "ActualizadoEn": datetime.now(base.TZ_PERU).strftime("%Y-%m-%d %H:%M")
+            })
+        new_hist = pd.DataFrame(records)
+        if HISTORY_FILE.exists():
             old_hist = pd.read_csv(HISTORY_FILE)
             combined = pd.concat([old_hist, new_hist]).drop_duplicates(
                 subset=["Fecha", "Local", "Visitante", "Mercado"], keep="last"
             )
             combined.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-        except Exception:
+        else:
             new_hist.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-    else:
-        new_hist.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
 
 def load_meta():
     if not META_FILE.exists():
@@ -225,8 +231,8 @@ def excel_bytes(matches, markets, metrics):
 st.markdown(
     f"""
     <div class="hero">
-      <h1>🐾 Forecaster Fútbol V10.2 Gatuno PRO</h1>
-      <p>Sistema autónomo con auditoría, controles de acierto y umbrales dinámicos.</p>
+      <h1>🐾 Forecaster Fútbol V10.2.1 Gatuno PRO</h1>
+      <p>Sistema autónomo blindado con auditoría y umbrales dinámicos.</p>
       <span class="pill green">🟢 🤩 ALTA EVIDENCIA (>60%)</span>
       <span class="pill amber">🟡 🧐 PRECAUCIÓN (50-60%)</span>
       <span class="pill red">🔴 🙀 RIESGOSO (&lt;50%)</span>
@@ -244,25 +250,27 @@ try:
             matches, markets, metrics, meta = run_and_save()
         st.toast("✅ ¡Cacería y auditoría listas!", icon="🐾")
 except Exception as exc:
-    st.error("Error al ejecutar V10.2.")
+    st.error("Error crítico al ejecutar V10.2.1.")
     st.code(str(exc))
+    with st.expander("Detalle técnico de error"):
+        st.code(traceback.format_exc())
     st.stop()
 
-# Panel visual del Módulo de Auditoría y Tasa de Éxito
+# Panel visual del Módulo de Auditoría y Tasa de Éxito protegido
 if HISTORY_FILE.exists():
     try:
         hist_df = pd.read_csv(HISTORY_FILE)
         total_audit = len(hist_df)
-        pendientes = len(hist_df[hist_df["EstadoResultado"] == "PENDIENTE"])
-        aciertos = len(hist_df[hist_df["EstadoResultado"] == "ACERTADO"])
-        fallos = len(hist_df[hist_df["EstadoResultado"] == "FALLADO"])
+        pendientes = len(hist_df[hist_df["EstadoResultado"] == "PENDIENTE"]) if "EstadoResultado" in hist_df.columns else total_audit
+        aciertos = len(hist_df[hist_df["EstadoResultado"] == "ACERTADO"]) if "EstadoResultado" in hist_df.columns else 0
+        fallos = len(hist_df[hist_df["EstadoResultado"] == "FALLADO"]) if "EstadoResultado" in hist_df.columns else 0
         evaluados = aciertos + fallos
         tasa_exito = (aciertos / evaluados * 100) if evaluados > 0 else 0.0
 
         st.markdown(f"""
         <div class="audit-box">
           <b>📊 Panel de Autoevaluación Histórica:</b> Registros totales: <b>{total_audit}</b> | 
-          Pendientes de resultado: <b>{pendientes}</b> | 
+          Pendientes: <b>{pendientes}</b> | 
           Evaluados: <b>{evaluados}</b> | 
           Tasa de Éxito Real: <b>{tasa_exito:.1f}%</b> {("✔️" if tasa_exito >= 60 else "⚠️")}
         </div>
@@ -328,11 +336,11 @@ for _, match in visible_matches.iterrows():
     for _, row in subset.iterrows():
         color_class = str(row.get("Semaforo", "ROJO")).lower()
         if color_class == "verde":
-            emoji = "🟢 🤩"
+            emoji = "🟢 <span>🤩</span>"
         elif color_class == "amarillo":
-            emoji = "🟡 🧐"
+            emoji = "🟡 <span>🧐</span>"
         else:
-            emoji = "🔴 🙀"
+            emoji = "🔴 <span>🙀</span>"
             
         st.markdown(
             f"""
