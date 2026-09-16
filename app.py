@@ -33,7 +33,7 @@ import bet_forecaster_v10 as v10
 import model_monitor as monitor
 
 
-APP_VERSION = "V10.3-AUDITADO"
+APP_VERSION = "V10.4-TRAZABLE"
 DATA_DIR = Path("app_data_v10")
 DATA_DIR.mkdir(exist_ok=True)
 MATCH_FILE = DATA_DIR / "latest_matches.csv"
@@ -46,7 +46,7 @@ META_FILE = DATA_DIR / "meta.json"
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Forecaster Futbol V10.3 PRO",
+    page_title="Forecaster Futbol V10.4",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -323,7 +323,7 @@ def excel_bytes(matches, markets, metrics):
 st.markdown(
     f"""
     <div class="hero">
-      <h1>⚽ Forecaster Futbol V10.3 PRO</h1>
+      <h1>⚽ Forecaster Futbol V10.4</h1>
       <p>Pronosticos individuales por partido, calibracion temporal, abstencion cuando faltan datos
       y auditoria real de resultados.</p>
       <span class="pill blue">SIN CUOTAS INVENTADAS</span>
@@ -454,121 +454,4 @@ with st.expander("📋 Auditoria real de pronosticos (aciertos/fallos por color 
         )
         brecha = monitor.comparar_calibracion_real(metricas)
         if brecha.empty:
-            st.caption("Sin filas VERDE/AMARILLO evaluadas todavia para comparar.")
-        else:
-            brecha_fmt = brecha.copy()
-            for col in ("PromesaMinima", "TasaReal", "Brecha"):
-                brecha_fmt[col] = brecha_fmt[col].apply(lambda v: "\u2014" if pd.isna(v) else f"{v*100:.1f}%")
-            st.dataframe(brecha_fmt, use_container_width=True, hide_index=True)
-
-    st.markdown("**Puntos medios: error real de goles y tarjetas esperados**")
-    st.caption(
-        "Esto no es un acierto/fallo binario: compara el numero que el modelo predijo "
-        "(p. ej. \"4.8 tarjetas esperadas\") contra el numero real del partido, y promedia "
-        "el error absoluto (MAE). Un MAE mas bajo es mejor; no existe un umbral universal "
-        "de \"bueno\", depende del mercado."
-    )
-    puntos_medios = audit.cargar_puntos_medios(PUNTOS_MEDIOS_FILE)
-    if puntos_medios.empty:
-        st.info("Todavia no hay partidos registrados para auditar puntos medios.")
-    else:
-        metricas_pm = audit.calcular_metricas_puntos_medios(puntos_medios)
-        tabla_pm = metricas_pm.copy()
-        tabla_pm["MAE"] = tabla_pm["MAE"].apply(lambda v: "SIN DATOS" if pd.isna(v) else f"{v:.2f}")
-        st.dataframe(tabla_pm, use_container_width=True, hide_index=True)
-
-if matches.empty:
-    st.warning("No hay partidos futuros sin iniciar en la ventana actual.")
-    st.stop()
-
-f1, f2 = st.columns(2)
-with f1:
-    dates = sorted(pd.to_datetime(matches["Fecha"]).dt.date.unique())
-    chosen_dates = st.multiselect("Fecha", dates, default=dates)
-with f2:
-    competitions = sorted(matches["Competicion"].dropna().astype(str).unique())
-    chosen_competitions = st.multiselect("Competicion", competitions, default=competitions)
-
-visible_matches = matches[
-    pd.to_datetime(matches["Fecha"]).dt.date.isin(chosen_dates)
-    & matches["Competicion"].astype(str).isin(chosen_competitions)
-]
-
-green_count = int((markets["Semaforo"] == "VERDE").sum()) if "Semaforo" in markets else 0
-red_count = int((markets["Semaforo"] == "ROJO").sum()) if "Semaforo" in markets else 0
-m1, m2, m3 = st.columns(3)
-m1.metric("Partidos", len(visible_matches))
-m2.metric("Mercados verdes", green_count)
-m3.metric("Mercados rojos/no modelables", red_count)
-
-for _, match in visible_matches.iterrows():
-    date_value = pd.Timestamp(match["Fecha"]).strftime("%d/%m/%Y")
-    subset = markets[
-        (markets["Fecha"].dt.date == pd.Timestamp(match["Fecha"]).date())
-        & (markets["HoraPeru"].astype(str) == str(match["HoraPeru"]))
-        & (markets["Local"].astype(str) == str(match["Local"]))
-        & (markets["Visitante"].astype(str) == str(match["Visitante"]))
-    ]
-    arg_value = match.get("CruceArgentinoInterliga", False)
-    arg_cross = str(arg_value).strip().lower() in {"true", "1", "si", "s\u00ed"}
-    arg_badge = (
-        '<span class="pill amber">Cruce argentino interliga</span>'
-        if arg_cross
-        else ""
-    )
-    st.markdown(
-        f"""
-        <div class="match-card">
-          <span class="pill blue">{match.get('Competicion','')}</span>
-          <span class="pill gray">Rotacion: {match.get('RiesgoRotacion','\u2014')}</span>
-          {arg_badge}
-          <div class="match-title">{match.get('Local','')} vs {match.get('Visitante','')}</div>
-          <div class="sub">{date_value} \u00b7 {match.get('HoraPeru','')} PET \u00b7 Alineacion: {match.get('EstadoAlineacion','\u2014')}</div>
-          <div class="kpis">
-            <div><b>GOLES ESP. LOCAL</b><span>{number(match.get('GolesEsperadosLocal'))}</span></div>
-            <div><b>GOLES ESP. VISITA</b><span>{number(match.get('GolesEsperadosVisitante'))}</span></div>
-            <div><b>GOLES ESP. 1T</b><span>{number(match.get('GolesEsperados1T'))}</span></div>
-            <div><b>TARJETAS ESP.</b><span>{number(match.get('TarjetasEsperadas'))}</span></div>
-          </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    for _, row in subset.iterrows():
-        color = str(row.get("Semaforo", "ROJO")).lower()
-        st.markdown(
-            f"""
-            <div class="market-row {color}">
-              <div class="market-name">{row.get('Mercado','')} <small>({row.get('Linea','')})</small></div>
-              <div class="pick">{row.get('Pronostico','')}</div>
-              <div class="prob">{pct(row.get('Probabilidad'))}</div>
-              <div class="risk">{row.get('Semaforo','')} \u00b7 {row.get('Nivel','')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    note = str(match.get("NotaContexto", "") or "")
-    if note:
-        st.caption("Contexto: " + note)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with st.expander("📐 Validacion temporal y fiabilidad"):
-    st.caption(
-        "Las metricas se calculan sobre el tramo mas reciente reservado y nunca usado para entrenar ese corte. "
-        "Un color verde exige ademas soporte local, calibracion y contexto; no basta con que P sea alta."
-    )
-    columns = [c for c in ["Modelo", "EstadoValidacion", "SuperaBase", "N_Validacion", "Brier", "BrierBase", "MejoraBrier", "LogLoss", "Exactitud", "ExactitudBase", "ECE", "MAE", "MAEBase", "MejoraMAE", "CalidadModelo"] if c in metrics.columns]
-    st.dataframe(metrics[columns], use_container_width=True, hide_index=True)
-
-with st.expander("ℹ️ Como leer V10.3"):
-    st.markdown(
-        """
-        - **VERDE:** buena evidencia estadistica; no significa certeza ni rentabilidad automatica.
-        - **AMARILLO:** senal intermedia; requiere prudencia y revision de alineacion.
-        - **ROJO:** muy riesgosa, insuficiente o no modelable. V10.3 no fuerza una seleccion.
-        - Los seis pronosticos aparecen juntos para analizar el partido, **no para apostar una combinada**.
-        - No hay handicap asiatico ni cuota estimada. Si luego se analiza valor, debe usarse la cuota real completa de la casa y retirarse su margen.
-        - El panel de auditoria mide como se comporto el modelo en el pasado; no es una promesa sobre el proximo partido.
-        """
-    )
-
-st.caption("Herramienta experimental de analisis. No garantiza aciertos ni ganancias; apuesta solo dinero que puedas perder.")
+            st.caption("Sin filas VERDE/AMARILLO 
