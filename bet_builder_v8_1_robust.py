@@ -108,9 +108,16 @@ MIN_PARTIDOS_EQUIPO = 6
 VENTANAS = (5, 10, 20)
 
 # ESPN histórico para Sudamérica.
-ESPN_HIST_DAYS = 220
-MAX_ESPN_HIST_EVENTS_PER_COMP = 85
-MAX_ESPN_SUMMARY_CALLS_HIST = 280
+ESPN_HIST_DAYS = 560
+# Para Elo, posiciones, resultado y goles se conserva una campana amplia. Los
+# resúmenes detallados (tarjetas/corners/1T) son más costosos y se limitan a
+# una ventana reciente independiente.
+MAX_ESPN_RESULT_EVENTS_PER_COMP = 260
+MAX_ESPN_HIST_EVENTS_PER_COMP = 90
+# Incluye liga argentina/brasilena/peruana y los dos torneos CONMEBOL. El
+# limite anterior agotaba el presupuesto antes de llegar a Libertadores y
+# Sudamericana, por lo que el modelo no podia aprender cruces interliga.
+MAX_ESPN_SUMMARY_CALLS_HIST = 450
 PAUSA_ESPN = 0.04
 
 # Futuro.
@@ -232,7 +239,7 @@ COMPETICIONES = {
         "tipo": "COPA",
         "grupo": "SAM",
         "fd_div": None,
-        "hist_espn": False,
+        "hist_espn": True,
         "potencial": 94,
         "cards": True,
         "gol1t": True,
@@ -243,7 +250,7 @@ COMPETICIONES = {
         "tipo": "COPA",
         "grupo": "SAM",
         "fd_div": None,
-        "hist_espn": False,
+        "hist_espn": True,
         "potencial": 93,
         "cards": True,
         "gol1t": True,
@@ -1031,14 +1038,16 @@ def descargar_historico_espn_sam():
         completos = sorted(
             completos,
             key=lambda e: e.get("date", ""),
-        )[-MAX_ESPN_HIST_EVENTS_PER_COMP:]
+        )[-MAX_ESPN_RESULT_EVENTS_PER_COMP:]
+
+        summary_event_ids = {
+            str(e.get("id"))
+            for e in completos[-MAX_ESPN_HIST_EVENTS_PER_COMP:]
+        }
 
         log(f"  Eventos a procesar: {len(completos)}")
 
         for ev in completos:
-            if summary_calls >= MAX_ESPN_SUMMARY_CALLS_HIST:
-                break
-
             comps_ev = ev.get("competitions") or []
             if not comps_ev:
                 continue
@@ -1099,19 +1108,23 @@ def descargar_historico_espn_sam():
                 "Referee": "",
             }
 
-            try:
-                summary = resumen_evento_espn(
-                    league,
-                    ev.get("id"),
-                )
-                summary_calls += 1
-                stats = parse_summary_stats(
-                    summary,
-                    home_t.get("id"),
-                    away_t.get("id"),
-                )
-            except Exception:
-                pass
+            if (
+                str(ev.get("id")) in summary_event_ids
+                and summary_calls < MAX_ESPN_SUMMARY_CALLS_HIST
+            ):
+                try:
+                    summary = resumen_evento_espn(
+                        league,
+                        ev.get("id"),
+                    )
+                    summary_calls += 1
+                    stats = parse_summary_stats(
+                        summary,
+                        home_t.get("id"),
+                        away_t.get("id"),
+                    )
+                except Exception:
+                    pass
 
             rows.append({
                 "Date": dt.tz_convert(TZ_PERU).tz_localize(None),
@@ -4544,7 +4557,14 @@ def descargar_contexto_h1():
                 )
             ) / 3600.0
 
-            if age_h <= 18:
+            required_v10 = {
+                "HomeTeam",
+                "AwayTeam",
+                "H1CornersTotal",
+                "Y_H1C_O45",
+            }
+
+            if age_h <= 18 and required_v10.issubset(df.columns):
                 log(
                     f"Contexto 1T desde cache: {len(df)}"
                 )
@@ -4827,6 +4847,24 @@ def descargar_contexto_h1():
                 "Grupo": info[
                     "grupo"
                 ],
+                "HomeTeam": (
+                    ht.get("displayName")
+                    or ht.get("shortDisplayName")
+                    or ""
+                ),
+                "AwayTeam": (
+                    at.get("displayName")
+                    or at.get("shortDisplayName")
+                    or ""
+                ),
+                "H1CornersTotal": h1_total,
+                "H1CornersHome": h1["H1CornersHome"],
+                "H1CornersAway": h1["H1CornersAway"],
+                "Y_H1C_O45": (
+                    int(h1_total >= 5)
+                    if pd.notna(h1_total)
+                    else np.nan
+                ),
                 "Y_BASE": y_base,
                 "Y_BLINDADO_CORE": y_blind,
                 "Y_H1C3": y_h1c3,
