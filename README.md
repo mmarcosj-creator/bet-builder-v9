@@ -1,78 +1,82 @@
-# BET BUILDER V9.3 CONTEXT PRO
+# Forecaster Fútbol V10.1 PRO
 
-Versión conservadora de V9.2. Conserva la probabilidad conjunta directa, el
-control de dependencia, el backtest walk-forward y la cuota real mínima 4.20,
-pero añade una capa explícita de contexto competitivo y rotación.
+V10.1 reemplaza el antiguo optimizador de combinadas por pronósticos
+individuales y auditables. No genera una cuota imaginaria, no usa hándicap
+asiático y no etiqueta un equipo como favorito mediante una aproximación.
 
-## Archivos de ejecución
+## Qué muestra por partido
 
-- `app.py`
-- `bet_builder_v8_1_robust.py`
-- `bet_builder_v9_3_context.py`
-- `bet_builder_v9_3_context_optimizer.py`
-- `scheduled_refresh.py`
-- `self_test_v9_3.py`
-- `CRITERIOS_V9_3.md`
-- `requirements.txt`
+1. Resultado 1X2: local, empate o visitante.
+2. Goles del primer tiempo: más/menos de 1.5.
+3. Córners del primer tiempo: más/menos de 4.5, únicamente cuando existen
+   conteos reales y validación suficiente.
+4. Tarjetas amarillas totales: más/menos de 4.5.
+5. El equipo local marca o no marca (línea 0.5).
+6. El equipo visitante marca o no marca (línea 0.5).
 
-No mezclar estos archivos con copias `(1)` o `(2)` ni con el optimizador V9.2.
+Los seis mercados se muestran juntos para estudiar el encuentro, no para
+recomendar que se combinen.
 
-## Inicio
+## Semáforo
+
+- **VERDE:** probabilidad, límite conservador, soporte, calibración temporal y
+  contexto superan todos los umbrales.
+- **AMARILLO:** evidencia intermedia.
+- **ROJO:** mercado muy riesgoso, modelo que no supera la base, datos
+  insuficientes o contexto incierto.
+
+Un verde no garantiza acierto ni rentabilidad. Si un modelo no mejora el
+Brier/MAE de la referencia en datos posteriores, V10 limita su fiabilidad y
+no permite que aparezca verde o amarillo.
+
+## Datos y criterios
+
+- Elo previo al partido y ventaja de localía.
+- Forma con decaimiento temporal y separación local/visitante.
+- Posición y puntos por partido calculados antes de cada encuentro.
+- Campaña actual y memoria reducida de la campaña previa.
+- Goles, goles al descanso, córners y tarjetas a favor/en contra.
+- Descanso, partidos en 14 días, fase competitiva, siguiente compromiso,
+  riesgo de rotación y alineación confirmada cuando está disponible.
+- Interacción de clubes argentinos contra otra liga en Libertadores o
+  Sudamericana. No aplica una reducción fija: exige 30 antecedentes
+  comparables antes de ajustar córners 1T y valida la señal fuera de muestra.
+
+## Instalación y Streamlit Cloud
+
+Sube todos estos archivos a la raíz del repositorio sin `(1)` ni nombres
+duplicados. En Streamlit Community Cloud selecciona `app.py` como archivo
+principal.
 
 ```bash
-pip install -r requirements.txt
-python self_test_v9_3.py
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-El acceso directo anterior puede conservarse si ejecuta `streamlit run app.py`
-desde esta carpeta.
+La primera ejecución puede tardar porque descarga y resume el histórico. Las
+siguientes reutilizan cachés. El botón **Actualizar pronósticos** elimina de la
+vista los partidos que ya comenzaron y usa la ventana desde el momento actual.
 
-## Regla operativa
+Si vienes de V9.3, sigue `ACTUALIZAR_DESDE_V9_3.md` para reemplazar los
+archivos desde GitHub móvil y reiniciar Streamlit.
 
-Una combinación solo puede llegar a `VALIDA` si cumple todo lo siguiente:
+## Auditoría de 100 partidos
 
-1. Máximo tres selecciones reales.
-2. Líneas idénticas a las generadas y firma de combinación coincidente.
-3. Estado previo `COTIZAR`, alineación confirmada, línea base de al menos tres
-   onces anteriores por equipo y cupo de cartera.
-4. Sin alerta alta de rotación en mercados sensibles.
-5. Cuota real igual o mayor que 4.20 y que `CuotaRequerida`.
-6. Sin dislocación extrema entre cuota real y cuota justa que sugiera un
-   error de mercado, línea o tipo de hándicap.
+```bash
+python self_test_v10.py
+```
 
-La aplicación permite como máximo dos partidos por día y uno por competición.
-No aumenta la probabilidad por el solo hecho de ser Champions, Libertadores o
-Sudamericana. Usa la fase real, la carga y el siguiente compromiso.
+El script fija primero el corte temporal, sortea 100 partidos posteriores con
+semilla reproducible y guarda detalle, resumen y validación en
+`self_test_output/`. No calcula ganancias sin las cuotas reales históricas de
+cada mercado: hacerlo con una cuota supuesta produciría un ROI ficticio.
 
-## Estados importantes
+## Límites
 
-- `ESPERAR_ALINEACION`: reejecutar cerca del comienzo del partido.
-- `VIGILAR_SIN_BASELINE_XI`: el once existe, pero aún no hay tres alineaciones
-  previas para distinguir titulares habituales de rotación.
-- `COTIZAR`: puede reproducirse exactamente en la casa para conocer la cuota.
-- `LABORATORIO`: mercado sin validación homogénea suficiente.
-- `DESCARTAR_CONTEXTO`: rotación o condición competitiva incompatible.
-- `CONFIRMAR_COMBINACION`: falta confirmar que las líneas son idénticas.
-- `REVISAR_PRECIO_MAPPING`: probable confusión de mercado o línea.
-- `VALIDA`: supera los filtros estadísticos y económicos; no garantiza ganar.
-
-## Límites honestos
-
-La alineación confirmada de ESPN se consulta únicamente cerca del partido. El
-archivo `app_data_v9_3/lineup_history.json` se forma prospectivamente y permite
-comparar cada once con hasta cinco alineaciones previas. El riesgo de rotación
-también depende de que ESPN publique el calendario y la fase. Cuando faltan
-datos, la confianza disminuye; no se completa la información por suposición.
-
-El backtest histórico sigue siendo sin fuga temporal. La nueva capa de
-alineaciones/calendario no se atribuye retroactivamente a fechas en las que el
-sistema no almacenó esa información. Debe validarse prospectivamente y con
-cuotas reales registradas; 300–500 apuestas es una muestra de control razonable,
-no una promesa de rentabilidad.
-
-## Juego responsable
-
-No usar crédito ni dinero destinado a vivienda, alimentos, servicios o
-obligaciones. No incrementar el importe para recuperar pérdidas. Este software
-es experimental y puede perder el total apostado.
+- Las tarjetas se modelan como amarillas `HY + AY`; la liquidación de rojas y
+  dobles amarillas depende de las reglas de cada casa.
+- Si ESPN no entrega córners del primer tiempo, el mercado aparece como
+  `SIN PRONÓSTICO`.
+- Las probabilidades son experimentales. La viabilidad económica solo puede
+  evaluarse con cuotas reales archivadas y un backtest completamente fuera de
+  muestra.
