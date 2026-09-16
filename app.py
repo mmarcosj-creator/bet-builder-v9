@@ -1,4 +1,4 @@
-"""Interfaz Streamlit para FORECASTER FUTBOL V10.2.1 GATUNO (Estable y Blindado)."""
+"""Interfaz Streamlit para FORECASTER FUTBOL V10.2.2 GATUNO (Ultra Blindado)."""
 
 from __future__ import annotations
 
@@ -13,9 +13,14 @@ import pandas as pd
 import streamlit as st
 
 import bet_builder_v8_1_robust as base
-import bet_forecaster_v10 as v10
 
-APP_VERSION = "V10.2.1 Gatuno Pro"
+# Importación blindada del motor v10
+try:
+    import bet_forecaster_v10 as v10
+except Exception:
+    v10 = None
+
+APP_VERSION = "V10.2.2 Gatuno Pro"
 DATA_DIR = Path("app_data_v10")
 DATA_DIR.mkdir(exist_ok=True)
 MATCH_FILE = DATA_DIR / "latest_matches.csv"
@@ -26,7 +31,7 @@ META_FILE = DATA_DIR / "meta.json"
 AUTO_REFRESH_HOURS = 12
 
 st.set_page_config(
-    page_title="Forecaster Fútbol V10.2.1 Gatuno",
+    page_title="Forecaster Fútbol V10.2.2 Gatuno",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -78,14 +83,6 @@ def safe_float(value, default=np.nan):
     except Exception:
         return default
 
-def pct(value):
-    value = safe_float(value)
-    return "—" if pd.isna(value) else f"{value * 100:.1f}%"
-
-def number(value, digits=2):
-    value = safe_float(value)
-    return "—" if pd.isna(value) else f"{value:.{digits}f}"
-
 def apply_gatuno_criteria(markets_df):
     if markets_df is None or markets_df.empty:
         return markets_df
@@ -105,7 +102,7 @@ def apply_gatuno_criteria(markets_df):
 
 def update_audit_history(markets_df, matches_df):
     try:
-        if markets_df is None or markets_df.empty or matches_df is None or matches_df.empty:
+        if markets_df is None or markets_df.empty:
             return
         records = []
         for _, row in markets_df.iterrows():
@@ -163,6 +160,8 @@ def filter_not_started(frame):
     return result.reset_index(drop=True)
 
 def run_and_save():
+    if v10 is None:
+        raise RuntimeError("No se pudo cargar el módulo bet_forecaster_v10.")
     matches, markets, metrics, start, end = v10.run_v10()
     matches = filter_not_started(matches)
     markets = filter_not_started(markets)
@@ -231,7 +230,7 @@ def excel_bytes(matches, markets, metrics):
 st.markdown(
     f"""
     <div class="hero">
-      <h1>🐾 Forecaster Fútbol V10.2.1 Gatuno PRO</h1>
+      <h1>🐾 Forecaster Fútbol V10.2.2 Gatuno PRO</h1>
       <p>Sistema autónomo blindado con auditoría y umbrales dinámicos.</p>
       <span class="pill green">🟢 🤩 ALTA EVIDENCIA (>60%)</span>
       <span class="pill amber">🟡 🧐 PRECAUCIÓN (50-60%)</span>
@@ -250,13 +249,13 @@ try:
             matches, markets, metrics, meta = run_and_save()
         st.toast("✅ ¡Cacería y auditoría listas!", icon="🐾")
 except Exception as exc:
-    st.error("Error crítico al ejecutar V10.2.1.")
+    st.error("⚠️ Error al inicializar el motor V10.2.2:")
     st.code(str(exc))
-    with st.expander("Detalle técnico de error"):
+    with st.expander("Ver detalles técnicos del error"):
         st.code(traceback.format_exc())
     st.stop()
 
-# Panel visual del Módulo de Auditoría y Tasa de Éxito protegido
+# Panel visual del Módulo de Auditoría protegido
 if HISTORY_FILE.exists():
     try:
         hist_df = pd.read_csv(HISTORY_FILE)
