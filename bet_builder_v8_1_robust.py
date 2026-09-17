@@ -48,9 +48,11 @@ import urllib.error
 import urllib.parse
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -286,6 +288,7 @@ FD_DIV_TO_COMP = {
 }
 
 BASE_HIST_FD = "https://www.football-data.co.uk/mmz4281/"
+FD_FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
 
 
 # ============================================================
@@ -316,7 +319,14 @@ ARCHIVO_CSV = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_TOP30.csv")
 ARCHIVO_BACKTEST = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_BACKTEST.csv")
 ARCHIVO_VARIANTES = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_VARIANTES.csv")
 ARCHIVO_LOG = os.path.join(OUTPUT_DIR, "BET_BUILDER_V8_LOG.txt")
-BUNDLED_HISTORY_PATH = Path(__file__).resolve().parent / "bundled_data" / "historical_fallback.csv.gz"
+PROJECT_ROOT = Path(__file__).resolve().parent
+BUNDLED_HISTORY_PATH = PROJECT_ROOT / "bundled_data" / "historical_fallback.csv.gz"
+BUNDLED_HISTORY_CANDIDATES = (
+    BUNDLED_HISTORY_PATH,
+    # Respaldo plano para cargas desde GitHub móvil, que a veces omiten la
+    # carpeta ``bundled_data`` al seleccionar archivos uno por uno.
+    PROJECT_ROOT / "historical_fallback.csv.gz",
+)
 
 
 # ============================================================
@@ -420,7 +430,14 @@ def descargar_json(url, timeout=None):
     raw = descargar_bytes(
         url,
         timeout=timeout,
-        headers={"Accept": "application/json,text/plain,*/*"},
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+                "Chrome/124.0 Safari/537.36 Gatuno/10.4.1"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Cache-Control": "no-cache",
+        },
     )
 
     if parece_html(raw):
@@ -982,42 +999,37 @@ def eventos_scoreboard_espn(league, start_date, end_date):
     )
 
     try:
-        return descargar_json(url).get("events", [])
+        return descargar_json(url, timeout=10).get("events", [])
     except Exception:
-        # En modo interactivo no se permiten cientos de consultas diarias si
-        # ESPN rechaza un intervalo historico largo. Es preferible declarar
-        # esa competicion sin cobertura y mostrarla en rojo que bloquear toda
-        # la aplicacion durante varios minutos.
-        fast_mode = os.environ.get("GATUNO_FAST_MODE", "0") == "1"
-        if fast_mode:
+        # ESPN a veces rechaza el intervalo aunque acepte exactamente las
+        # mismas fechas consultadas día por día. Esta recuperación se permite
+        # también en modo rápido, pero únicamente para ventanas cortas. Así la
+        # pantalla no queda vacía por un fallo transitorio del endpoint.
+        span_days = int((pd.Timestamp(end_date) - pd.Timestamp(start_date)).days) + 1
+        if span_days > 10:
             return []
 
-        # fallback día a día solo para ventanas cortas (calendario/resultados)
         eventos = []
-        d = start_date
-
-        while d <= end_date:
-            url = (
+        d = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date)
+        while d <= end:
+            daily_url = (
                 "https://site.api.espn.com/apis/site/v2/sports/"
                 f"soccer/{league}/scoreboard?"
                 f"dates={d.strftime('%Y%m%d')}&limit=1000"
             )
-
             try:
-                eventos.extend(
-                    descargar_json(url).get("events", [])
-                )
+                eventos.extend(descargar_json(daily_url, timeout=6).get("events", []))
             except Exception:
                 pass
-
             d += pd.Timedelta(days=1)
-            time.sleep(0.03)
+            time.sleep(0.02)
 
-        # dedupe ID
         unicos = {}
-        for e in eventos:
-            unicos[str(e.get("id"))] = e
-
+        for event in eventos:
+            event_id = str(event.get("id") or "")
+            if event_id:
+                unicos[event_id] = event
         return list(unicos.values())
 
 
@@ -1189,18 +1201,24 @@ def descargar_historico_espn_sam():
 
 def cargar_historico_empaquetado():
     """Respaldo compacto para que un servidor remoto lento no bloquee la app."""
-    try:
-        if not BUNDLED_HISTORY_PATH.exists():
-            return pd.DataFrame()
-        fallback = pd.read_csv(BUNDLED_HISTORY_PATH, compression="gzip")
-        fallback["Date"] = pd.to_datetime(fallback["Date"], errors="coerce")
-        fallback = fallback.dropna(
-            subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
-        )
-        return normalizar_df(fallback)
-    except Exception as exc:
-        log(f"Historico empaquetado no disponible: {exc}")
-        return pd.DataFrame()
+    errors = []
+    for candidate in BUNDLED_HISTORY_CANDIDATES:
+        if not candidate.exists():
+            continue
+        try:
+            fallback = pd.read_csv(candidate, compression="gzip")
+            fallback["Date"] = pd.to_datetime(fallback["Date"], errors="coerce")
+            fallback = fallback.dropna(
+                subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
+            )
+            if not fallback.empty:
+                log(f"Historico empaquetado cargado: {candidate.name} ({len(fallback)} filas)")
+                return normalizar_df(fallback)
+        except Exception as exc:
+            errors.append(f"{candidate.name}: {exc}")
+    detail = "; ".join(errors) if errors else "archivo no encontrado"
+    log(f"Historico empaquetado no disponible: {detail}")
+    return pd.DataFrame()
 
 
 def descargar_historico_total():
@@ -1994,10 +2012,102 @@ def filtrar_fixtures_desde_ahora(
     return fixtures.loc[mask].reset_index(drop=True)
 
 
+def descargar_fixtures_football_data(inicio, fin):
+    """Calendario europeo secundario cuando ESPN no responde.
+
+    Football-Data publica una lista semanal de fixtures. La hora del archivo
+    se interpreta como hora británica y se convierte a UTC/PET. La fuente no
+    cubre todos los torneos sudamericanos, por lo que complementa a ESPN y no
+    pretende sustituirla por completo.
+    """
+    try:
+        raw = descargar_bytes(FD_FIXTURES_URL, timeout=10, reintentos=1)
+        frame = csv_desde_bytes(raw, "Football-Data fixtures")
+    except Exception as exc:
+        log(f"  Football-Data fixtures no disponible: {exc}")
+        return pd.DataFrame()
+
+    required = {"Div", "Date", "HomeTeam", "AwayTeam"}
+    if frame.empty or not required.issubset(frame.columns):
+        return pd.DataFrame()
+
+    frame = frame.copy()
+    frame["DateParsed"] = pd.to_datetime(frame["Date"], dayfirst=True, errors="coerce")
+    frame = frame[
+        frame["Div"].astype(str).isin(FD_DIV_TO_COMP)
+        & frame["DateParsed"].between(pd.Timestamp(inicio), pd.Timestamp(fin), inclusive="both")
+    ]
+    if frame.empty:
+        return pd.DataFrame()
+
+    rows = []
+    london = ZoneInfo("Europe/London")
+    for index, source in frame.iterrows():
+        comp_key = FD_DIV_TO_COMP.get(str(source.get("Div", "")))
+        if not comp_key:
+            continue
+        match_date = pd.Timestamp(source["DateParsed"])
+        time_text = str(source.get("Time", "12:00") or "12:00").strip()
+        if not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
+            time_text = "12:00"
+        naive = pd.to_datetime(
+            f"{match_date.date().isoformat()} {time_text}",
+            errors="coerce",
+        )
+        if pd.isna(naive):
+            continue
+        try:
+            kickoff_utc = pd.Timestamp(naive).tz_localize(
+                london,
+                ambiguous=False,
+                nonexistent="shift_forward",
+            ).tz_convert("UTC")
+        except Exception:
+            kickoff_utc = pd.Timestamp(naive).tz_localize("UTC")
+        info = COMPETICIONES[comp_key]
+
+        def odd(*names):
+            for name in names:
+                value = numero(source.get(name, np.nan))
+                if pd.notna(value) and value > 1:
+                    return float(value)
+            return np.nan
+
+        rows.append({
+            "Date": pd.Timestamp(match_date.date()),
+            "KickoffUTC": kickoff_utc.isoformat(),
+            "HoraPeru": kickoff_utc.tz_convert(TZ_PERU).strftime("%H:%M"),
+            "CompKey": comp_key,
+            "Grupo": info["grupo"],
+            "Competicion": info["nombre"],
+            "TipoCompeticion": info["tipo"],
+            "StageText": "",
+            "HomeOriginal": str(source.get("HomeTeam", "")),
+            "AwayOriginal": str(source.get("AwayTeam", "")),
+            "HomeTeam": str(source.get("HomeTeam", "")),
+            "AwayTeam": str(source.get("AwayTeam", "")),
+            "HomeESPNID": "",
+            "AwayESPNID": "",
+            "EventID": f"FD-{comp_key}-{match_date:%Y%m%d}-{index}",
+            "StatusState": "pre",
+            "StatusName": "SCHEDULED",
+            "Completed": False,
+            "EspnH": odd("AvgH", "B365H", "PSH"),
+            "EspnD": odd("AvgD", "B365D", "PSD"),
+            "EspnA": odd("AvgA", "B365A", "PSA"),
+            "Stadium": "",
+            "VenueCity": "",
+            "VenueState": "",
+            "VenueCountry": "",
+            "FuenteFixture": "Football-Data fixtures",
+        })
+    return normalizar_df(pd.DataFrame(rows)) if rows else pd.DataFrame()
+
+
 def descargar_fixtures_objetivo(inicio, fin):
     rows = []
 
-    for comp_key, info in COMPETICIONES.items():
+    def fetch_competition(comp_key, info):
         try:
             eventos = eventos_scoreboard_espn(
                 info["espn"],
@@ -2008,10 +2118,10 @@ def descargar_fixtures_objetivo(inicio, fin):
             log(
                 f"  {info['nombre']}: error fixtures {e}"
             )
-            continue
+            return comp_key, [], 0
 
+        local_rows = []
         n = 0
-
         for ev in eventos:
             row = extraer_future_event(
                 ev,
@@ -2024,17 +2134,44 @@ def descargar_fixtures_objetivo(inicio, fin):
             if row["Date"] < inicio or row["Date"] > fin:
                 continue
 
-            rows.append(row)
+            local_rows.append(row)
             n += 1
+        return comp_key, local_rows, n
 
-        log(f"  {info['nombre']}: {n} partidos")
+    # Las competiciones son independientes. Consultarlas en paralelo evita
+    # que doce timeouts consecutivos hagan caer la primera ejecución.
+    workers = 6 if os.environ.get("GATUNO_FAST_MODE", "0") == "1" else 4
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(fetch_competition, key, info): (key, info)
+            for key, info in COMPETICIONES.items()
+        }
+        for future in as_completed(futures):
+            comp_key, info = futures[future]
+            try:
+                _, local_rows, n = future.result()
+            except Exception as exc:
+                log(f"  {info['nombre']}: error fixtures {exc}")
+                continue
+            rows.extend(local_rows)
+            log(f"  {info['nombre']}: {n} partidos")
 
-    if not rows:
+    espn = normalizar_df(pd.DataFrame(rows)) if rows else pd.DataFrame()
+    secondary = descargar_fixtures_football_data(inicio, fin)
+    frames = [frame for frame in (espn, secondary) if frame is not None and not frame.empty]
+
+    if not frames:
         raise RuntimeError(
-            "ESPN no devolvió partidos de las competiciones objetivo"
+            "No se obtuvo calendario: ESPN y Football-Data no respondieron con partidos"
         )
 
-    fixtures = normalizar_df(pd.DataFrame(rows))
+    fixtures = normalizar_df(pd.concat(frames, ignore_index=True, sort=False))
+    # ESPN conserva prioridad cuando ambas fuentes describen el mismo partido.
+    fixtures["_source_priority"] = fixtures["FuenteFixture"].astype(str).ne("ESPN").astype(int)
+    fixtures = fixtures.sort_values("_source_priority").drop_duplicates(
+        subset=["CompKey", "Date", "HomeTeam", "AwayTeam"],
+        keep="first",
+    ).drop(columns="_source_priority")
     return filtrar_fixtures_desde_ahora(fixtures)
 
 

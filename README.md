@@ -1,6 +1,6 @@
-# Forecaster Fútbol V10.4 Gatuno Adaptativo
+# Forecaster Fútbol V10.4.1 Gatuno Adaptativo
 
-V10.4 es un sistema experimental de pronósticos **individuales** por partido. Cierra resultados, mide el desempeño por mercado y propone ajustes conservadores sin modificar criterios a escondidas.
+V10.4.1 es un sistema experimental de pronósticos **individuales** por partido. Cierra resultados, mide el desempeño por mercado y propone ajustes conservadores sin modificar criterios a escondidas. El hotfix 10.4.1 agrega recuperación diaria de ESPN, calendario secundario de Football-Data y un histórico local en la raíz para cargas desde GitHub móvil.
 
 ## Pantalla principal
 
@@ -57,6 +57,8 @@ streamlit run app.py
 ```
 
 La primera generación puede tardar porque construye la caché. Las aperturas siguientes cargan esa caché. Usa **Actualizar y auditar resultados** al cerrar la jornada.
+
+El archivo `historical_fallback.csv.gz` debe quedar en la misma pantalla del repositorio que `app.py`. También se conserva una copia dentro de `bundled_data/`.
 
 ## Archivos principales
 

@@ -10,6 +10,7 @@ import pandas as pd
 
 import adaptive_monitor as adaptive
 import gatuno_audit as audit
+import bet_builder_v8_1_robust as base
 
 
 NOW = pd.Timestamp("2026-09-16T15:00:00Z")
@@ -153,6 +154,62 @@ def test_legacy_history_migration_preserves_result() -> None:
         assert migrated.iloc[0]["MercadoCodigo"] == "RESULT_1X2"
 
 
+def test_flat_bundled_history_fallback() -> None:
+    with TemporaryDirectory() as directory:
+        target = Path(directory) / "historical_fallback.csv.gz"
+        pd.DataFrame([{
+            "Date": "2026-09-01", "HomeTeam": "Gatos", "AwayTeam": "Perros",
+            "FTHG": 2, "FTAG": 1, "HTHG": 1, "HTAG": 0,
+        }]).to_csv(target, index=False, compression="gzip")
+        before = base.BUNDLED_HISTORY_CANDIDATES
+        try:
+            base.BUNDLED_HISTORY_CANDIDATES = (Path(directory) / "missing.gz", target)
+            loaded = base.cargar_historico_empaquetado()
+        finally:
+            base.BUNDLED_HISTORY_CANDIDATES = before
+        assert len(loaded) == 1
+        assert loaded.iloc[0]["HomeTeam"] == "Gatos"
+
+
+def test_football_data_fixture_fallback() -> None:
+    sample = (
+        "Div,Date,Time,HomeTeam,AwayTeam,AvgH,AvgD,AvgA\n"
+        "E0,18/09/2026,20:00,Cat FC,Dog United,1.90,3.30,4.10\n"
+    ).encode()
+    original = base.descargar_bytes
+    try:
+        base.descargar_bytes = lambda *args, **kwargs: sample
+        fixtures = base.descargar_fixtures_football_data(
+            pd.Timestamp("2026-09-17"), pd.Timestamp("2026-09-23")
+        )
+    finally:
+        base.descargar_bytes = original
+    assert len(fixtures) == 1
+    assert fixtures.iloc[0]["CompKey"] == "ENG"
+    assert fixtures.iloc[0]["FuenteFixture"] == "Football-Data fixtures"
+
+
+def test_espn_short_window_uses_daily_recovery() -> None:
+    calls = []
+    original = base.descargar_json
+    try:
+        def fake_json(url, timeout=None):
+            calls.append(url)
+            if "-" in url.split("dates=")[-1].split("&")[0]:
+                raise RuntimeError("intervalo rechazado")
+            if "dates=20260918" in url:
+                return {"events": [{"id": "cat-match"}]}
+            return {"events": []}
+        base.descargar_json = fake_json
+        events = base.eventos_scoreboard_espn(
+            "eng.1", pd.Timestamp("2026-09-17"), pd.Timestamp("2026-09-19")
+        )
+    finally:
+        base.descargar_json = original
+    assert [event["id"] for event in events] == ["cat-match"]
+    assert len(calls) == 4
+
+
 def run() -> None:
     tests = [
         test_small_sample_does_not_alert,
@@ -162,6 +219,9 @@ def run() -> None:
         test_revert_removes_active_rule,
         test_sync_changes_only_future_pending_signal,
         test_legacy_history_migration_preserves_result,
+        test_flat_bundled_history_fallback,
+        test_football_data_fixture_fallback,
+        test_espn_short_window_uses_daily_recovery,
     ]
     for test in tests:
         test()

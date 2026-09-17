@@ -1,4 +1,4 @@
-"""Interfaz ligera para Forecaster Futbol V10.4 Gatuno Adaptativo."""
+"""Interfaz ligera para Forecaster Futbol V10.4.1 Gatuno Adaptativo."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import adaptive_monitor as adaptive
 import model_monitor as quality_monitor
 
 
-APP_VERSION = "V10.4-GATUNO-ADAPTATIVO"
+APP_VERSION = "V10.4.1-GATUNO-ADAPTATIVO"
 DATA_DIR = Path("app_data_v10")
 DATA_DIR.mkdir(exist_ok=True)
 MATCH_FILE = DATA_DIR / "latest_matches.csv"
@@ -37,7 +37,7 @@ RUN_STATE_FILE = DATA_DIR / "last_run_state.json"
 METRICS_LOG_FILE = DATA_DIR / "model_metrics_log.csv"
 
 st.set_page_config(
-    page_title="V10.4 Gatuno Adaptativo",
+    page_title="V10.4.1 Gatuno Adaptativo",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -343,7 +343,7 @@ def excel_bytes(
 st.markdown(
     f"""
     <div class="hero">
-      <h1>🐾😺 Forecaster Fútbol V10.4 Gatuno Adaptativo</h1>
+      <h1>🐾😺 Forecaster Fútbol V10.4.1 Gatuno Adaptativo</h1>
       <p>Pronósticos individuales, cierre de jornada y ajustes trazables con tu confirmación.</p>
       <span class="pill green">🟢 BUENA EVIDENCIA</span>
       <span class="pill amber">🟡 PRECAUCIÓN</span>
@@ -381,19 +381,19 @@ if not cache_ready:
     elif last_run.get("status") == "RUNNING":
         st.warning(
             "La ejecución anterior fue interrumpida por el servidor antes de guardar la caché. "
-            "V10.4 reduce las descargas para evitar que vuelva a ocurrir."
+            "V10.4.1 usa dos fuentes de calendario y un histórico local para evitar que vuelva a ocurrir."
         )
         if last_run.get("phase"):
             st.caption(f"Última fase registrada: {last_run['phase']}")
     else:
         st.warning("Primera ejecución rápida: genera una vez los datos. Después la pantalla abrirá desde la caché.")
-    if st.button("🐾 Generar pronósticos V10.4", type="primary", use_container_width=True):
+    if st.button("🐾 Generar pronósticos V10.4.1", type="primary", use_container_width=True):
         try:
             atomic_json(
                 {"status": "RUNNING", "phase": "Inicio", "updated_at": datetime.now(base.TZ_PERU).isoformat()},
                 RUN_STATE_FILE,
             )
-            with st.status("Construyendo V10.4 en modo rápido…", expanded=True) as status:
+            with st.status("Construyendo V10.4.1 con fuentes de respaldo…", expanded=True) as status:
                 def show_progress(message: str) -> None:
                     st.write(message)
                     atomic_json(
@@ -554,7 +554,7 @@ left, right = st.columns(2)
 with left:
     if st.button("🔄 Actualizar y auditar resultados", use_container_width=True):
         try:
-            with st.status("Actualizando V10.4…", expanded=True):
+            with st.status("Actualizando V10.4.1…", expanded=True):
                 matches, markets, metrics, meta, history, closure = refresh_everything(
                     first_run=False,
                     progress=st.write,
@@ -569,7 +569,7 @@ with right:
     st.download_button(
         "📊 Descargar Excel claro",
         data=excel_bytes(matches, markets, metrics, history),
-        file_name="V10_4_GATUNO_PRONOSTICOS_Y_AUDITORIA.xlsx",
+        file_name="V10_4_1_GATUNO_PRONOSTICOS_Y_AUDITORIA.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
@@ -582,7 +582,7 @@ with st.expander("💾 Respaldo de auditoría (opcional)"):
         st.download_button(
             "Descargar historial inmutable",
             data=history.to_csv(index=False, encoding="utf-8-sig"),
-            file_name="historial_pronosticos_v104.csv",
+            file_name="historial_pronosticos_v1041.csv",
             mime="text/csv",
             use_container_width=True,
         )
