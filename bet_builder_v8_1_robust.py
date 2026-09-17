@@ -62,7 +62,7 @@ import pandas as pd
 # CONFIGURACION
 # ============================================================
 
-VERSION = "V8-SELECTIVE"
+VERSION = "V15.0-CLEAN-CORE"
 TOP_N = 30
 
 # Perú: UTC-5 todo el año. Evita ZoneInfo/tzdata en Pydroid.
