@@ -433,7 +433,7 @@ def descargar_json(url, timeout=None):
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-                "Chrome/124.0 Safari/537.36 Gatuno/10.4.1"
+                "Chrome/124.0 Safari/537.36 Gatuno/10.4.2"
             ),
             "Accept": "application/json,text/plain,*/*",
             "Cache-Control": "no-cache",
@@ -1216,6 +1216,22 @@ def cargar_historico_empaquetado():
                 return normalizar_df(fallback)
         except Exception as exc:
             errors.append(f"{candidate.name}: {exc}")
+    # Última barrera: el mismo gzip viene incorporado en un módulo Python.
+    # Esto evita que una carga desde GitHub móvil pierda el archivo binario o
+    # lo coloque en una carpeta diferente. No se generan datos sintéticos.
+    try:
+        from embedded_history import gzip_bytes
+
+        fallback = pd.read_csv(io.BytesIO(gzip_bytes()), compression="gzip")
+        fallback["Date"] = pd.to_datetime(fallback["Date"], errors="coerce")
+        fallback = fallback.dropna(
+            subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
+        )
+        if not fallback.empty:
+            log(f"Historico Gatuno autocontenido cargado ({len(fallback)} filas)")
+            return normalizar_df(fallback)
+    except Exception as exc:
+        errors.append(f"embedded_history.py: {exc}")
     detail = "; ".join(errors) if errors else "archivo no encontrado"
     log(f"Historico empaquetado no disponible: {detail}")
     return pd.DataFrame()

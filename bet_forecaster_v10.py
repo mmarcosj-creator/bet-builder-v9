@@ -48,7 +48,7 @@ except Exception as exc:  # pragma: no cover - mensaje explicito en despliegue
     ) from exc
 
 
-VERSION = "V10.4.1-GATUNO-ADAPTATIVO"
+VERSION = "V10.4.2-GATUNO-ADAPTATIVO"
 APP_DATA_DIR = Path("app_data_v10")
 LINEUP_HISTORY_PATH = APP_DATA_DIR / "lineup_history.json"
 
